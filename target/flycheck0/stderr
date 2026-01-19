@@ -1,0 +1,172 @@
+   0.165695000s  INFO prepare_target{force=false package_id=core v0.1.0 (D:\tmp\my-mir-framework\crates\core) target="core"}: cargo::core::compiler::fingerprint: fingerprint error for core v0.1.0 (D:\tmp\my-mir-framework\crates\core)/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("core", ["lib"], "D:\\tmp\\my-mir-framework\\crates\\core\\src\\lib.rs", Edition2024) }
+   0.165761000s  INFO prepare_target{force=false package_id=core v0.1.0 (D:\tmp\my-mir-framework\crates\core) target="core"}: cargo::core::compiler::fingerprint:     err: failed to read `D:\tmp\my-mir-framework\target\debug\.fingerprint\core-d47c26a92a337c69\lib-core`
+
+Caused by:
+    系统找不到指定的文件。 (os error 2)
+
+Stack backtrace:
+   0: git_midx_writer_dump
+   1: git_midx_writer_dump
+   2: git_midx_writer_dump
+   3: git_midx_writer_dump
+   4: git_filter_source_repo
+   5: git_filter_source_path
+   6: git_filter_source_path
+   7: git_filter_source_path
+   8: git_filter_source_path
+   9: git_filter_source_repo
+  10: git_filter_source_repo
+  11: git_filter_source_repo
+  12: git_filter_source_repo
+  13: git_filter_source_repo
+  14: <unknown>
+  15: <unknown>
+  16: git_midx_writer_dump
+  17: git_filter_source_repo
+  18: git_midx_writer_dump
+  19: BaseThreadInitThunk
+  20: RtlUserThreadStart
+   0.186608800s  INFO prepare_target{force=false package_id=core v0.1.0 (D:\tmp\my-mir-framework\crates\core) target="core"}: cargo::core::compiler::fingerprint: fingerprint error for core v0.1.0 (D:\tmp\my-mir-framework\crates\core)/Check { test: true }/TargetInner { name_inferred: true, ..: lib_target("core", ["lib"], "D:\\tmp\\my-mir-framework\\crates\\core\\src\\lib.rs", Edition2024) }
+   0.186633000s  INFO prepare_target{force=false package_id=core v0.1.0 (D:\tmp\my-mir-framework\crates\core) target="core"}: cargo::core::compiler::fingerprint:     err: failed to read `D:\tmp\my-mir-framework\target\debug\.fingerprint\core-a80439163df3c4cb\test-lib-core`
+
+Caused by:
+    系统找不到指定的文件。 (os error 2)
+
+Stack backtrace:
+   0: git_midx_writer_dump
+   1: git_midx_writer_dump
+   2: git_midx_writer_dump
+   3: git_midx_writer_dump
+   4: git_filter_source_repo
+   5: git_filter_source_path
+   6: git_filter_source_path
+   7: git_filter_source_path
+   8: git_filter_source_path
+   9: git_filter_source_repo
+  10: git_filter_source_repo
+  11: git_filter_source_repo
+  12: git_filter_source_repo
+  13: git_filter_source_repo
+  14: <unknown>
+  15: <unknown>
+  16: git_midx_writer_dump
+  17: git_filter_source_repo
+  18: git_midx_writer_dump
+  19: BaseThreadInitThunk
+  20: RtlUserThreadStart
+   0.187423500s  INFO prepare_target{force=false package_id=domains v0.1.0 (D:\tmp\my-mir-framework\crates\domains) target="domains"}: cargo::core::compiler::fingerprint: fingerprint error for domains v0.1.0 (D:\tmp\my-mir-framework\crates\domains)/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("domains", ["lib"], "D:\\tmp\\my-mir-framework\\crates\\domains\\src\\lib.rs", Edition2024) }
+   0.187441300s  INFO prepare_target{force=false package_id=domains v0.1.0 (D:\tmp\my-mir-framework\crates\domains) target="domains"}: cargo::core::compiler::fingerprint:     err: failed to read `D:\tmp\my-mir-framework\target\debug\.fingerprint\domains-e7707949dcb220bd\lib-domains`
+
+Caused by:
+    系统找不到指定的文件。 (os error 2)
+
+Stack backtrace:
+   0: git_midx_writer_dump
+   1: git_midx_writer_dump
+   2: git_midx_writer_dump
+   3: git_midx_writer_dump
+   4: git_filter_source_repo
+   5: git_filter_source_path
+   6: git_filter_source_path
+   7: git_filter_source_path
+   8: git_filter_source_path
+   9: git_filter_source_repo
+  10: git_filter_source_repo
+  11: git_filter_source_repo
+  12: git_filter_source_repo
+  13: git_filter_source_repo
+  14: <unknown>
+  15: <unknown>
+  16: git_midx_writer_dump
+  17: git_filter_source_repo
+  18: git_midx_writer_dump
+  19: BaseThreadInitThunk
+  20: RtlUserThreadStart
+   0.188229500s  INFO prepare_target{force=false package_id=domains v0.1.0 (D:\tmp\my-mir-framework\crates\domains) target="domains"}: cargo::core::compiler::fingerprint: fingerprint error for domains v0.1.0 (D:\tmp\my-mir-framework\crates\domains)/Check { test: true }/TargetInner { name_inferred: true, ..: lib_target("domains", ["lib"], "D:\\tmp\\my-mir-framework\\crates\\domains\\src\\lib.rs", Edition2024) }
+   0.188250900s  INFO prepare_target{force=false package_id=domains v0.1.0 (D:\tmp\my-mir-framework\crates\domains) target="domains"}: cargo::core::compiler::fingerprint:     err: failed to read `D:\tmp\my-mir-framework\target\debug\.fingerprint\domains-437a1e1e90d11600\test-lib-domains`
+
+Caused by:
+    系统找不到指定的文件。 (os error 2)
+
+Stack backtrace:
+   0: git_midx_writer_dump
+   1: git_midx_writer_dump
+   2: git_midx_writer_dump
+   3: git_midx_writer_dump
+   4: git_filter_source_repo
+   5: git_filter_source_path
+   6: git_filter_source_path
+   7: git_filter_source_path
+   8: git_filter_source_path
+   9: git_filter_source_repo
+  10: git_filter_source_repo
+  11: git_filter_source_repo
+  12: git_filter_source_repo
+  13: git_filter_source_repo
+  14: <unknown>
+  15: <unknown>
+  16: git_midx_writer_dump
+  17: git_filter_source_repo
+  18: git_midx_writer_dump
+  19: BaseThreadInitThunk
+  20: RtlUserThreadStart
+   0.189145400s  INFO prepare_target{force=false package_id=driver v0.1.0 (D:\tmp\my-mir-framework\crates\driver) target="driver"}: cargo::core::compiler::fingerprint: fingerprint error for driver v0.1.0 (D:\tmp\my-mir-framework\crates\driver)/Check { test: false }/TargetInner { name: "driver", doc: true, ..: with_path("D:\\tmp\\my-mir-framework\\crates\\driver\\src\\main.rs", Edition2024) }
+   0.189174900s  INFO prepare_target{force=false package_id=driver v0.1.0 (D:\tmp\my-mir-framework\crates\driver) target="driver"}: cargo::core::compiler::fingerprint:     err: failed to read `D:\tmp\my-mir-framework\target\debug\.fingerprint\driver-3f800738c3cb98bd\bin-driver`
+
+Caused by:
+    系统找不到指定的文件。 (os error 2)
+
+Stack backtrace:
+   0: git_midx_writer_dump
+   1: git_midx_writer_dump
+   2: git_midx_writer_dump
+   3: git_midx_writer_dump
+   4: git_filter_source_repo
+   5: git_filter_source_path
+   6: git_filter_source_path
+   7: git_filter_source_path
+   8: git_filter_source_path
+   9: git_filter_source_repo
+  10: git_filter_source_repo
+  11: git_filter_source_repo
+  12: git_filter_source_repo
+  13: git_filter_source_repo
+  14: <unknown>
+  15: <unknown>
+  16: git_midx_writer_dump
+  17: git_filter_source_repo
+  18: git_midx_writer_dump
+  19: BaseThreadInitThunk
+  20: RtlUserThreadStart
+   0.189905000s  INFO prepare_target{force=false package_id=driver v0.1.0 (D:\tmp\my-mir-framework\crates\driver) target="driver"}: cargo::core::compiler::fingerprint: fingerprint error for driver v0.1.0 (D:\tmp\my-mir-framework\crates\driver)/Check { test: true }/TargetInner { name: "driver", doc: true, ..: with_path("D:\\tmp\\my-mir-framework\\crates\\driver\\src\\main.rs", Edition2024) }
+   0.189921000s  INFO prepare_target{force=false package_id=driver v0.1.0 (D:\tmp\my-mir-framework\crates\driver) target="driver"}: cargo::core::compiler::fingerprint:     err: failed to read `D:\tmp\my-mir-framework\target\debug\.fingerprint\driver-38b9022c7f7a253f\test-bin-driver`
+
+Caused by:
+    系统找不到指定的文件。 (os error 2)
+
+Stack backtrace:
+   0: git_midx_writer_dump
+   1: git_midx_writer_dump
+   2: git_midx_writer_dump
+   3: git_midx_writer_dump
+   4: git_filter_source_repo
+   5: git_filter_source_path
+   6: git_filter_source_path
+   7: git_filter_source_path
+   8: git_filter_source_path
+   9: git_filter_source_repo
+  10: git_filter_source_repo
+  11: git_filter_source_repo
+  12: git_filter_source_repo
+  13: git_filter_source_repo
+  14: <unknown>
+  15: <unknown>
+  16: git_midx_writer_dump
+  17: git_filter_source_repo
+  18: git_midx_writer_dump
+  19: BaseThreadInitThunk
+  20: RtlUserThreadStart
+    Checking core v0.1.0 (D:\tmp\my-mir-framework\crates\core)
+    Checking domains v0.1.0 (D:\tmp\my-mir-framework\crates\domains)
+    Checking driver v0.1.0 (D:\tmp\my-mir-framework\crates\driver)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.99s
