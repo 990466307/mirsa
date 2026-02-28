@@ -20,3 +20,7 @@ dependencies = [
  "core",
  "domains",
 ]
+
+[[package]]
+name = "mirsa"
+version = "0.1.0"

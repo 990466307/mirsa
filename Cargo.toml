@@ -5,3 +5,11 @@ members = [
     "crates/domains",
 ]
 resolver = "2"
+
+[package]
+name = "mirsa"
+version = "0.1.0"
+edition = "2021"
+
+description = "rust mir static analysis"
+license = "MIT"
