@@ -1,0 +1,4 @@
+# Sign analysis engine config
+max_paths = 10
+max_iterations = none
+

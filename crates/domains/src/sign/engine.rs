@@ -1,53 +1,68 @@
-use std::collections::VecDeque;
-
-use rustc_middle::mir::*;
-use rustc_middle::ty::TyCtxt;
-
 use core::cfg::Cfg;
+use rustc_hir::def_id::DefId;
+use rustc_middle::mir::{Body, LocalDecls, Place, Statement};
+use rustc_middle::ty::TyCtxt;
+use std::path::Path;
 
-use super::state::{join_state, SignState};
-use super::transfer::transfer_block;
+use crate::framework::config::load_engine_config;
+use crate::framework::forward::{ForwardSemantics, PathForwardAnalysisConfig};
+use crate::framework::printer::run_and_print_path_sensitive_analysis;
 
-#[derive(Clone, Debug)]
-pub struct SignAnalysisResult {
-    pub in_states: Vec<SignState>,
-    pub out_states: Vec<SignState>,
+use super::condition_path::refine_edge;
+use super::state::SignState;
+use super::transfer::transfer_stmt;
+
+struct SignSemantics<'a, 'tcx> {
+    places: &'a [Place<'tcx>],
 }
 
-pub fn run_sign<'tcx>(tcx: TyCtxt<'tcx>, body: &Body<'tcx>, cfg: &Cfg) -> SignAnalysisResult {
-    let n = body.basic_blocks.len();
-    let mut in_states = vec![SignState::default(); n];
-    let mut out_states = vec![SignState::default(); n];
+impl<'a, 'tcx> ForwardSemantics<'tcx> for SignSemantics<'a, 'tcx> {
+    type State = SignState<'tcx>;
 
-    let mut worklist = VecDeque::new();
-    worklist.push_back(BasicBlock::from_usize(0));
-
-    while let Some(bb) = worklist.pop_front() {
-        // 合流：in[bb] = join(out[pred...])
-        if bb.index() != 0 {
-            let mut merged: Option<SignState> = None;
-            for p in &cfg.pred[bb.index()] {
-                let po = &out_states[p.index()];
-                merged = Some(match merged {
-                    None => po.clone(),
-                    Some(acc) => join_state(&acc, po),
-                });
-            }
-            if let Some(new_in) = merged {
-                if new_in != in_states[bb.index()] {
-                    in_states[bb.index()] = new_in;
-                }
-            }
-        }
-
-        let new_out = transfer_block(tcx, body, bb, &in_states[bb.index()]);
-        if new_out != out_states[bb.index()] {
-            out_states[bb.index()] = new_out;
-            for s in &cfg.succ[bb.index()] {
-                worklist.push_back(*s);
-            }
-        }
+    fn bottom(&self, _body: &'tcx Body<'tcx>) -> Self::State {
+        SignState::new_bot_state(self.places)
     }
 
-    SignAnalysisResult { in_states, out_states }
+    fn transfer_stmt(
+        &self,
+        tcx: TyCtxt<'tcx>,
+        st: &mut Self::State,
+        stmt: &Statement<'tcx>,
+        local_decls: &'tcx LocalDecls<'tcx>,
+    ) {
+        transfer_stmt(tcx, st, stmt, local_decls)
+    }
+
+    fn refine_edge(
+        &self,
+        tcx: TyCtxt<'tcx>,
+        body: &'tcx Body<'tcx>,
+        pred: rustc_middle::mir::BasicBlock,
+        succ: rustc_middle::mir::BasicBlock,
+        in_state: &Self::State,
+    ) -> Option<Self::State> {
+        refine_edge(tcx, body, pred, succ, in_state)
+    }
+}
+
+pub fn run_sign<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    def_id: DefId,
+    body: &'tcx Body<'tcx>,
+    cfg: &Cfg,
+    places: &Vec<Place<'tcx>>,
+) {
+    let config = load_engine_config(Path::new("crates/domains/src/sign/sign.toml"));
+    let semantics = SignSemantics { places };
+    run_and_print_path_sensitive_analysis(
+        tcx,
+        def_id,
+        body,
+        cfg,
+        &semantics,
+        PathForwardAnalysisConfig {
+            max_paths: config.max_paths,
+            widen_after_iterations: config.max_iterations,
+        },
+    );
 }

@@ -1,172 +1,262 @@
-   0.165695000s  INFO prepare_target{force=false package_id=core v0.1.0 (D:\tmp\my-mir-framework\crates\core) target="core"}: cargo::core::compiler::fingerprint: fingerprint error for core v0.1.0 (D:\tmp\my-mir-framework\crates\core)/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("core", ["lib"], "D:\\tmp\\my-mir-framework\\crates\\core\\src\\lib.rs", Edition2024) }
-   0.165761000s  INFO prepare_target{force=false package_id=core v0.1.0 (D:\tmp\my-mir-framework\crates\core) target="core"}: cargo::core::compiler::fingerprint:     err: failed to read `D:\tmp\my-mir-framework\target\debug\.fingerprint\core-d47c26a92a337c69\lib-core`
+   0.014138899s  INFO prepare_target{force=false package_id=core v0.1.0 (/home/wentao/mirsa/crates/core) target="core"}: cargo::core::compiler::fingerprint: fingerprint error for core v0.1.0 (/home/wentao/mirsa/crates/core)/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("core", ["lib"], "/home/wentao/mirsa/crates/core/src/lib.rs", Edition2024) }
+   0.014198799s  INFO prepare_target{force=false package_id=core v0.1.0 (/home/wentao/mirsa/crates/core) target="core"}: cargo::core::compiler::fingerprint:     err: failed to read `/home/wentao/mirsa/target/debug/.fingerprint/core-6b711b4aa89c8e8a/lib-core`
 
 Caused by:
-    系统找不到指定的文件。 (os error 2)
+    No such file or directory (os error 2)
 
 Stack backtrace:
-   0: git_midx_writer_dump
-   1: git_midx_writer_dump
-   2: git_midx_writer_dump
-   3: git_midx_writer_dump
-   4: git_filter_source_repo
-   5: git_filter_source_path
-   6: git_filter_source_path
-   7: git_filter_source_path
-   8: git_filter_source_path
-   9: git_filter_source_repo
-  10: git_filter_source_repo
-  11: git_filter_source_repo
-  12: git_filter_source_repo
-  13: git_filter_source_repo
-  14: <unknown>
-  15: <unknown>
-  16: git_midx_writer_dump
-  17: git_filter_source_repo
-  18: git_midx_writer_dump
-  19: BaseThreadInitThunk
-  20: RtlUserThreadStart
-   0.186608800s  INFO prepare_target{force=false package_id=core v0.1.0 (D:\tmp\my-mir-framework\crates\core) target="core"}: cargo::core::compiler::fingerprint: fingerprint error for core v0.1.0 (D:\tmp\my-mir-framework\crates\core)/Check { test: true }/TargetInner { name_inferred: true, ..: lib_target("core", ["lib"], "D:\\tmp\\my-mir-framework\\crates\\core\\src\\lib.rs", Edition2024) }
-   0.186633000s  INFO prepare_target{force=false package_id=core v0.1.0 (D:\tmp\my-mir-framework\crates\core) target="core"}: cargo::core::compiler::fingerprint:     err: failed to read `D:\tmp\my-mir-framework\target\debug\.fingerprint\core-a80439163df3c4cb\test-lib-core`
+   0: cargo_util::paths::read_bytes
+   1: cargo_util::paths::read
+   2: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   3: cargo::core::compiler::fingerprint::prepare_target
+   4: cargo::core::compiler::compile
+   5: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   6: cargo::ops::cargo_compile::compile_ws
+   7: cargo::ops::cargo_compile::compile_with_exec
+   8: cargo::ops::cargo_compile::compile
+   9: cargo::commands::check::exec
+  10: <cargo::cli::Exec>::exec
+  11: cargo::main
+  12: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  13: std::rt::lang_start::<()>::{closure#0}
+  14: core::ops::function::impls::<impl core::ops::function::FnOnce<A> for &F>::call_once
+             at /rustc/a567209daab72b7ea59eac533278064396bb0534/library/core/src/ops/function.rs:284:13
+  15: std::panicking::try::do_call
+             at /rustc/a567209daab72b7ea59eac533278064396bb0534/library/std/src/panicking.rs:587:40
+  16: std::panicking::try
+             at /rustc/a567209daab72b7ea59eac533278064396bb0534/library/std/src/panicking.rs:550:19
+  17: std::panic::catch_unwind
+             at /rustc/a567209daab72b7ea59eac533278064396bb0534/library/std/src/panic.rs:358:14
+  18: std::rt::lang_start_internal::{{closure}}
+             at /rustc/a567209daab72b7ea59eac533278064396bb0534/library/std/src/rt.rs:168:24
+  19: std::panicking::try::do_call
+             at /rustc/a567209daab72b7ea59eac533278064396bb0534/library/std/src/panicking.rs:587:40
+  20: std::panicking::try
+             at /rustc/a567209daab72b7ea59eac533278064396bb0534/library/std/src/panicking.rs:550:19
+  21: std::panic::catch_unwind
+             at /rustc/a567209daab72b7ea59eac533278064396bb0534/library/std/src/panic.rs:358:14
+  22: std::rt::lang_start_internal
+             at /rustc/a567209daab72b7ea59eac533278064396bb0534/library/std/src/rt.rs:164:5
+  23: main
+  24: <unknown>
+  25: __libc_start_main
+  26: <unknown>
+   0.037345398s  INFO prepare_target{force=false package_id=core v0.1.0 (/home/wentao/mirsa/crates/core) target="core"}: cargo::core::compiler::fingerprint: fingerprint error for core v0.1.0 (/home/wentao/mirsa/crates/core)/Check { test: true }/TargetInner { name_inferred: true, ..: lib_target("core", ["lib"], "/home/wentao/mirsa/crates/core/src/lib.rs", Edition2024) }
+   0.037380598s  INFO prepare_target{force=false package_id=core v0.1.0 (/home/wentao/mirsa/crates/core) target="core"}: cargo::core::compiler::fingerprint:     err: failed to read `/home/wentao/mirsa/target/debug/.fingerprint/core-d7f49ba2c9df4a99/test-lib-core`
 
 Caused by:
-    系统找不到指定的文件。 (os error 2)
+    No such file or directory (os error 2)
 
 Stack backtrace:
-   0: git_midx_writer_dump
-   1: git_midx_writer_dump
-   2: git_midx_writer_dump
-   3: git_midx_writer_dump
-   4: git_filter_source_repo
-   5: git_filter_source_path
-   6: git_filter_source_path
-   7: git_filter_source_path
-   8: git_filter_source_path
-   9: git_filter_source_repo
-  10: git_filter_source_repo
-  11: git_filter_source_repo
-  12: git_filter_source_repo
-  13: git_filter_source_repo
-  14: <unknown>
-  15: <unknown>
-  16: git_midx_writer_dump
-  17: git_filter_source_repo
-  18: git_midx_writer_dump
-  19: BaseThreadInitThunk
-  20: RtlUserThreadStart
-   0.187423500s  INFO prepare_target{force=false package_id=domains v0.1.0 (D:\tmp\my-mir-framework\crates\domains) target="domains"}: cargo::core::compiler::fingerprint: fingerprint error for domains v0.1.0 (D:\tmp\my-mir-framework\crates\domains)/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("domains", ["lib"], "D:\\tmp\\my-mir-framework\\crates\\domains\\src\\lib.rs", Edition2024) }
-   0.187441300s  INFO prepare_target{force=false package_id=domains v0.1.0 (D:\tmp\my-mir-framework\crates\domains) target="domains"}: cargo::core::compiler::fingerprint:     err: failed to read `D:\tmp\my-mir-framework\target\debug\.fingerprint\domains-e7707949dcb220bd\lib-domains`
+   0: cargo_util::paths::read_bytes
+   1: cargo_util::paths::read
+   2: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   3: cargo::core::compiler::fingerprint::prepare_target
+   4: cargo::core::compiler::compile
+   5: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   6: cargo::ops::cargo_compile::compile_ws
+   7: cargo::ops::cargo_compile::compile_with_exec
+   8: cargo::ops::cargo_compile::compile
+   9: cargo::commands::check::exec
+  10: <cargo::cli::Exec>::exec
+  11: cargo::main
+  12: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  13: std::rt::lang_start::<()>::{closure#0}
+  14: core::ops::function::impls::<impl core::ops::function::FnOnce<A> for &F>::call_once
+             at /rustc/a567209daab72b7ea59eac533278064396bb0534/library/core/src/ops/function.rs:284:13
+  15: std::panicking::try::do_call
+             at /rustc/a567209daab72b7ea59eac533278064396bb0534/library/std/src/panicking.rs:587:40
+  16: std::panicking::try
+             at /rustc/a567209daab72b7ea59eac533278064396bb0534/library/std/src/panicking.rs:550:19
+  17: std::panic::catch_unwind
+             at /rustc/a567209daab72b7ea59eac533278064396bb0534/library/std/src/panic.rs:358:14
+  18: std::rt::lang_start_internal::{{closure}}
+             at /rustc/a567209daab72b7ea59eac533278064396bb0534/library/std/src/rt.rs:168:24
+  19: std::panicking::try::do_call
+             at /rustc/a567209daab72b7ea59eac533278064396bb0534/library/std/src/panicking.rs:587:40
+  20: std::panicking::try
+             at /rustc/a567209daab72b7ea59eac533278064396bb0534/library/std/src/panicking.rs:550:19
+  21: std::panic::catch_unwind
+             at /rustc/a567209daab72b7ea59eac533278064396bb0534/library/std/src/panic.rs:358:14
+  22: std::rt::lang_start_internal
+             at /rustc/a567209daab72b7ea59eac533278064396bb0534/library/std/src/rt.rs:164:5
+  23: main
+  24: <unknown>
+  25: __libc_start_main
+  26: <unknown>
+   0.038041498s  INFO prepare_target{force=false package_id=domains v0.1.0 (/home/wentao/mirsa/crates/domains) target="domains"}: cargo::core::compiler::fingerprint: fingerprint error for domains v0.1.0 (/home/wentao/mirsa/crates/domains)/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("domains", ["lib"], "/home/wentao/mirsa/crates/domains/src/lib.rs", Edition2024) }
+   0.038069498s  INFO prepare_target{force=false package_id=domains v0.1.0 (/home/wentao/mirsa/crates/domains) target="domains"}: cargo::core::compiler::fingerprint:     err: failed to read `/home/wentao/mirsa/target/debug/.fingerprint/domains-9bc667e2715a4d36/lib-domains`
 
 Caused by:
-    系统找不到指定的文件。 (os error 2)
+    No such file or directory (os error 2)
 
 Stack backtrace:
-   0: git_midx_writer_dump
-   1: git_midx_writer_dump
-   2: git_midx_writer_dump
-   3: git_midx_writer_dump
-   4: git_filter_source_repo
-   5: git_filter_source_path
-   6: git_filter_source_path
-   7: git_filter_source_path
-   8: git_filter_source_path
-   9: git_filter_source_repo
-  10: git_filter_source_repo
-  11: git_filter_source_repo
-  12: git_filter_source_repo
-  13: git_filter_source_repo
-  14: <unknown>
-  15: <unknown>
-  16: git_midx_writer_dump
-  17: git_filter_source_repo
-  18: git_midx_writer_dump
-  19: BaseThreadInitThunk
-  20: RtlUserThreadStart
-   0.188229500s  INFO prepare_target{force=false package_id=domains v0.1.0 (D:\tmp\my-mir-framework\crates\domains) target="domains"}: cargo::core::compiler::fingerprint: fingerprint error for domains v0.1.0 (D:\tmp\my-mir-framework\crates\domains)/Check { test: true }/TargetInner { name_inferred: true, ..: lib_target("domains", ["lib"], "D:\\tmp\\my-mir-framework\\crates\\domains\\src\\lib.rs", Edition2024) }
-   0.188250900s  INFO prepare_target{force=false package_id=domains v0.1.0 (D:\tmp\my-mir-framework\crates\domains) target="domains"}: cargo::core::compiler::fingerprint:     err: failed to read `D:\tmp\my-mir-framework\target\debug\.fingerprint\domains-437a1e1e90d11600\test-lib-domains`
+   0: cargo_util::paths::read_bytes
+   1: cargo_util::paths::read
+   2: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   3: cargo::core::compiler::fingerprint::prepare_target
+   4: cargo::core::compiler::compile
+   5: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   6: cargo::ops::cargo_compile::compile_ws
+   7: cargo::ops::cargo_compile::compile_with_exec
+   8: cargo::ops::cargo_compile::compile
+   9: cargo::commands::check::exec
+  10: <cargo::cli::Exec>::exec
+  11: cargo::main
+  12: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  13: std::rt::lang_start::<()>::{closure#0}
+  14: core::ops::function::impls::<impl core::ops::function::FnOnce<A> for &F>::call_once
+             at /rustc/a567209daab72b7ea59eac533278064396bb0534/library/core/src/ops/function.rs:284:13
+  15: std::panicking::try::do_call
+             at /rustc/a567209daab72b7ea59eac533278064396bb0534/library/std/src/panicking.rs:587:40
+  16: std::panicking::try
+             at /rustc/a567209daab72b7ea59eac533278064396bb0534/library/std/src/panicking.rs:550:19
+  17: std::panic::catch_unwind
+             at /rustc/a567209daab72b7ea59eac533278064396bb0534/library/std/src/panic.rs:358:14
+  18: std::rt::lang_start_internal::{{closure}}
+             at /rustc/a567209daab72b7ea59eac533278064396bb0534/library/std/src/rt.rs:168:24
+  19: std::panicking::try::do_call
+             at /rustc/a567209daab72b7ea59eac533278064396bb0534/library/std/src/panicking.rs:587:40
+  20: std::panicking::try
+             at /rustc/a567209daab72b7ea59eac533278064396bb0534/library/std/src/panicking.rs:550:19
+  21: std::panic::catch_unwind
+             at /rustc/a567209daab72b7ea59eac533278064396bb0534/library/std/src/panic.rs:358:14
+  22: std::rt::lang_start_internal
+             at /rustc/a567209daab72b7ea59eac533278064396bb0534/library/std/src/rt.rs:164:5
+  23: main
+  24: <unknown>
+  25: __libc_start_main
+  26: <unknown>
+   0.038711998s  INFO prepare_target{force=false package_id=domains v0.1.0 (/home/wentao/mirsa/crates/domains) target="domains"}: cargo::core::compiler::fingerprint: fingerprint error for domains v0.1.0 (/home/wentao/mirsa/crates/domains)/Check { test: true }/TargetInner { name_inferred: true, ..: lib_target("domains", ["lib"], "/home/wentao/mirsa/crates/domains/src/lib.rs", Edition2024) }
+   0.038739298s  INFO prepare_target{force=false package_id=domains v0.1.0 (/home/wentao/mirsa/crates/domains) target="domains"}: cargo::core::compiler::fingerprint:     err: failed to read `/home/wentao/mirsa/target/debug/.fingerprint/domains-fec4a0c4b3c5deeb/test-lib-domains`
 
 Caused by:
-    系统找不到指定的文件。 (os error 2)
+    No such file or directory (os error 2)
 
 Stack backtrace:
-   0: git_midx_writer_dump
-   1: git_midx_writer_dump
-   2: git_midx_writer_dump
-   3: git_midx_writer_dump
-   4: git_filter_source_repo
-   5: git_filter_source_path
-   6: git_filter_source_path
-   7: git_filter_source_path
-   8: git_filter_source_path
-   9: git_filter_source_repo
-  10: git_filter_source_repo
-  11: git_filter_source_repo
-  12: git_filter_source_repo
-  13: git_filter_source_repo
-  14: <unknown>
-  15: <unknown>
-  16: git_midx_writer_dump
-  17: git_filter_source_repo
-  18: git_midx_writer_dump
-  19: BaseThreadInitThunk
-  20: RtlUserThreadStart
-   0.189145400s  INFO prepare_target{force=false package_id=driver v0.1.0 (D:\tmp\my-mir-framework\crates\driver) target="driver"}: cargo::core::compiler::fingerprint: fingerprint error for driver v0.1.0 (D:\tmp\my-mir-framework\crates\driver)/Check { test: false }/TargetInner { name: "driver", doc: true, ..: with_path("D:\\tmp\\my-mir-framework\\crates\\driver\\src\\main.rs", Edition2024) }
-   0.189174900s  INFO prepare_target{force=false package_id=driver v0.1.0 (D:\tmp\my-mir-framework\crates\driver) target="driver"}: cargo::core::compiler::fingerprint:     err: failed to read `D:\tmp\my-mir-framework\target\debug\.fingerprint\driver-3f800738c3cb98bd\bin-driver`
+   0: cargo_util::paths::read_bytes
+   1: cargo_util::paths::read
+   2: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   3: cargo::core::compiler::fingerprint::prepare_target
+   4: cargo::core::compiler::compile
+   5: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   6: cargo::ops::cargo_compile::compile_ws
+   7: cargo::ops::cargo_compile::compile_with_exec
+   8: cargo::ops::cargo_compile::compile
+   9: cargo::commands::check::exec
+  10: <cargo::cli::Exec>::exec
+  11: cargo::main
+  12: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  13: std::rt::lang_start::<()>::{closure#0}
+  14: core::ops::function::impls::<impl core::ops::function::FnOnce<A> for &F>::call_once
+             at /rustc/a567209daab72b7ea59eac533278064396bb0534/library/core/src/ops/function.rs:284:13
+  15: std::panicking::try::do_call
+             at /rustc/a567209daab72b7ea59eac533278064396bb0534/library/std/src/panicking.rs:587:40
+  16: std::panicking::try
+             at /rustc/a567209daab72b7ea59eac533278064396bb0534/library/std/src/panicking.rs:550:19
+  17: std::panic::catch_unwind
+             at /rustc/a567209daab72b7ea59eac533278064396bb0534/library/std/src/panic.rs:358:14
+  18: std::rt::lang_start_internal::{{closure}}
+             at /rustc/a567209daab72b7ea59eac533278064396bb0534/library/std/src/rt.rs:168:24
+  19: std::panicking::try::do_call
+             at /rustc/a567209daab72b7ea59eac533278064396bb0534/library/std/src/panicking.rs:587:40
+  20: std::panicking::try
+             at /rustc/a567209daab72b7ea59eac533278064396bb0534/library/std/src/panicking.rs:550:19
+  21: std::panic::catch_unwind
+             at /rustc/a567209daab72b7ea59eac533278064396bb0534/library/std/src/panic.rs:358:14
+  22: std::rt::lang_start_internal
+             at /rustc/a567209daab72b7ea59eac533278064396bb0534/library/std/src/rt.rs:164:5
+  23: main
+  24: <unknown>
+  25: __libc_start_main
+  26: <unknown>
+   0.039337198s  INFO prepare_target{force=false package_id=driver v0.1.0 (/home/wentao/mirsa/crates/driver) target="driver"}: cargo::core::compiler::fingerprint: fingerprint error for driver v0.1.0 (/home/wentao/mirsa/crates/driver)/Check { test: false }/TargetInner { name: "driver", doc: true, ..: with_path("/home/wentao/mirsa/crates/driver/src/main.rs", Edition2024) }
+   0.039362398s  INFO prepare_target{force=false package_id=driver v0.1.0 (/home/wentao/mirsa/crates/driver) target="driver"}: cargo::core::compiler::fingerprint:     err: failed to read `/home/wentao/mirsa/target/debug/.fingerprint/driver-895e4d6e9bd797bf/bin-driver`
 
 Caused by:
-    系统找不到指定的文件。 (os error 2)
+    No such file or directory (os error 2)
 
 Stack backtrace:
-   0: git_midx_writer_dump
-   1: git_midx_writer_dump
-   2: git_midx_writer_dump
-   3: git_midx_writer_dump
-   4: git_filter_source_repo
-   5: git_filter_source_path
-   6: git_filter_source_path
-   7: git_filter_source_path
-   8: git_filter_source_path
-   9: git_filter_source_repo
-  10: git_filter_source_repo
-  11: git_filter_source_repo
-  12: git_filter_source_repo
-  13: git_filter_source_repo
-  14: <unknown>
-  15: <unknown>
-  16: git_midx_writer_dump
-  17: git_filter_source_repo
-  18: git_midx_writer_dump
-  19: BaseThreadInitThunk
-  20: RtlUserThreadStart
-   0.189905000s  INFO prepare_target{force=false package_id=driver v0.1.0 (D:\tmp\my-mir-framework\crates\driver) target="driver"}: cargo::core::compiler::fingerprint: fingerprint error for driver v0.1.0 (D:\tmp\my-mir-framework\crates\driver)/Check { test: true }/TargetInner { name: "driver", doc: true, ..: with_path("D:\\tmp\\my-mir-framework\\crates\\driver\\src\\main.rs", Edition2024) }
-   0.189921000s  INFO prepare_target{force=false package_id=driver v0.1.0 (D:\tmp\my-mir-framework\crates\driver) target="driver"}: cargo::core::compiler::fingerprint:     err: failed to read `D:\tmp\my-mir-framework\target\debug\.fingerprint\driver-38b9022c7f7a253f\test-bin-driver`
+   0: cargo_util::paths::read_bytes
+   1: cargo_util::paths::read
+   2: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   3: cargo::core::compiler::fingerprint::prepare_target
+   4: cargo::core::compiler::compile
+   5: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   6: cargo::ops::cargo_compile::compile_ws
+   7: cargo::ops::cargo_compile::compile_with_exec
+   8: cargo::ops::cargo_compile::compile
+   9: cargo::commands::check::exec
+  10: <cargo::cli::Exec>::exec
+  11: cargo::main
+  12: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  13: std::rt::lang_start::<()>::{closure#0}
+  14: core::ops::function::impls::<impl core::ops::function::FnOnce<A> for &F>::call_once
+             at /rustc/a567209daab72b7ea59eac533278064396bb0534/library/core/src/ops/function.rs:284:13
+  15: std::panicking::try::do_call
+             at /rustc/a567209daab72b7ea59eac533278064396bb0534/library/std/src/panicking.rs:587:40
+  16: std::panicking::try
+             at /rustc/a567209daab72b7ea59eac533278064396bb0534/library/std/src/panicking.rs:550:19
+  17: std::panic::catch_unwind
+             at /rustc/a567209daab72b7ea59eac533278064396bb0534/library/std/src/panic.rs:358:14
+  18: std::rt::lang_start_internal::{{closure}}
+             at /rustc/a567209daab72b7ea59eac533278064396bb0534/library/std/src/rt.rs:168:24
+  19: std::panicking::try::do_call
+             at /rustc/a567209daab72b7ea59eac533278064396bb0534/library/std/src/panicking.rs:587:40
+  20: std::panicking::try
+             at /rustc/a567209daab72b7ea59eac533278064396bb0534/library/std/src/panicking.rs:550:19
+  21: std::panic::catch_unwind
+             at /rustc/a567209daab72b7ea59eac533278064396bb0534/library/std/src/panic.rs:358:14
+  22: std::rt::lang_start_internal
+             at /rustc/a567209daab72b7ea59eac533278064396bb0534/library/std/src/rt.rs:164:5
+  23: main
+  24: <unknown>
+  25: __libc_start_main
+  26: <unknown>
+   0.040019998s  INFO prepare_target{force=false package_id=driver v0.1.0 (/home/wentao/mirsa/crates/driver) target="driver"}: cargo::core::compiler::fingerprint: fingerprint error for driver v0.1.0 (/home/wentao/mirsa/crates/driver)/Check { test: true }/TargetInner { name: "driver", doc: true, ..: with_path("/home/wentao/mirsa/crates/driver/src/main.rs", Edition2024) }
+   0.040045998s  INFO prepare_target{force=false package_id=driver v0.1.0 (/home/wentao/mirsa/crates/driver) target="driver"}: cargo::core::compiler::fingerprint:     err: failed to read `/home/wentao/mirsa/target/debug/.fingerprint/driver-bc2ff11f0afa0e9b/test-bin-driver`
 
 Caused by:
-    系统找不到指定的文件。 (os error 2)
+    No such file or directory (os error 2)
 
 Stack backtrace:
-   0: git_midx_writer_dump
-   1: git_midx_writer_dump
-   2: git_midx_writer_dump
-   3: git_midx_writer_dump
-   4: git_filter_source_repo
-   5: git_filter_source_path
-   6: git_filter_source_path
-   7: git_filter_source_path
-   8: git_filter_source_path
-   9: git_filter_source_repo
-  10: git_filter_source_repo
-  11: git_filter_source_repo
-  12: git_filter_source_repo
-  13: git_filter_source_repo
-  14: <unknown>
-  15: <unknown>
-  16: git_midx_writer_dump
-  17: git_filter_source_repo
-  18: git_midx_writer_dump
-  19: BaseThreadInitThunk
-  20: RtlUserThreadStart
-    Checking core v0.1.0 (D:\tmp\my-mir-framework\crates\core)
-    Checking domains v0.1.0 (D:\tmp\my-mir-framework\crates\domains)
-    Checking driver v0.1.0 (D:\tmp\my-mir-framework\crates\driver)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.99s
+   0: cargo_util::paths::read_bytes
+   1: cargo_util::paths::read
+   2: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   3: cargo::core::compiler::fingerprint::prepare_target
+   4: cargo::core::compiler::compile
+   5: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   6: cargo::ops::cargo_compile::compile_ws
+   7: cargo::ops::cargo_compile::compile_with_exec
+   8: cargo::ops::cargo_compile::compile
+   9: cargo::commands::check::exec
+  10: <cargo::cli::Exec>::exec
+  11: cargo::main
+  12: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  13: std::rt::lang_start::<()>::{closure#0}
+  14: core::ops::function::impls::<impl core::ops::function::FnOnce<A> for &F>::call_once
+             at /rustc/a567209daab72b7ea59eac533278064396bb0534/library/core/src/ops/function.rs:284:13
+  15: std::panicking::try::do_call
+             at /rustc/a567209daab72b7ea59eac533278064396bb0534/library/std/src/panicking.rs:587:40
+  16: std::panicking::try
+             at /rustc/a567209daab72b7ea59eac533278064396bb0534/library/std/src/panicking.rs:550:19
+  17: std::panic::catch_unwind
+             at /rustc/a567209daab72b7ea59eac533278064396bb0534/library/std/src/panic.rs:358:14
+  18: std::rt::lang_start_internal::{{closure}}
+             at /rustc/a567209daab72b7ea59eac533278064396bb0534/library/std/src/rt.rs:168:24
+  19: std::panicking::try::do_call
+             at /rustc/a567209daab72b7ea59eac533278064396bb0534/library/std/src/panicking.rs:587:40
+  20: std::panicking::try
+             at /rustc/a567209daab72b7ea59eac533278064396bb0534/library/std/src/panicking.rs:550:19
+  21: std::panic::catch_unwind
+             at /rustc/a567209daab72b7ea59eac533278064396bb0534/library/std/src/panic.rs:358:14
+  22: std::rt::lang_start_internal
+             at /rustc/a567209daab72b7ea59eac533278064396bb0534/library/std/src/rt.rs:164:5
+  23: main
+  24: <unknown>
+  25: __libc_start_main
+  26: <unknown>
+    Checking core v0.1.0 (/home/wentao/mirsa/crates/core)
+    Checking domains v0.1.0 (/home/wentao/mirsa/crates/domains)
+    Checking driver v0.1.0 (/home/wentao/mirsa/crates/driver)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.62s
