@@ -90,10 +90,7 @@ pub fn lt(a: Sign, b: Sign) -> Sign {
         (Bot, _) | (_, Bot) => Bot,
         (Neg, Zero) | (Neg, Pos) | (Zero, Pos) => Pos,
         (Pos, Zero) | (Pos, Neg) | (Zero, Zero) | (Zero, Neg) => Zero,
-        (Neg, Neg)
-        | (Pos, Pos)
-        | (Top, _)
-        | (_, Top) => Top,
+        (Neg, Neg) | (Pos, Pos) | (Top, _) | (_, Top) => Top,
     }
 }
 
@@ -103,10 +100,7 @@ pub fn eq(a: Sign, b: Sign) -> Sign {
         (Bot, _) | (_, Bot) => Bot,
         (Zero, Zero) => Pos,
         (Neg, Zero) | (Zero, Neg) | (Pos, Zero) | (Zero, Pos) | (Neg, Pos) | (Pos, Neg) => Zero,
-        (Neg, Neg)
-        | (Pos, Pos)
-        | (Top, _)
-        | (_, Top) => Top,
+        (Neg, Neg) | (Pos, Pos) | (Top, _) | (_, Top) => Top,
     }
 }
 

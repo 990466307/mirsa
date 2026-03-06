@@ -1,68 +1,51 @@
 // WARNING: This output format is intended for human consumers only
 // and is subject to change without notice. Knock yourself out.
-fn fun() -> () {
+fn main() -> () {
     let mut _0: ();
-    let mut _1: i32;
-    let mut _3: bool;
-    let mut _4: i32;
-    let mut _5: i32;
-    let mut _6: i32;
-    let mut _7: (i32, bool);
-    let mut _8: i32;
-    let mut _9: (i32, bool);
+    let _1: *mut MyStruct;
+    let mut _4: &*mut MyStruct;
+    let _9: &i32;
     scope 1 {
-        debug i => _1;
-        let mut _2: i32;
+        debug raw_ptr => _1;
+        let _2: *mut MyStruct;
         scope 2 {
-            debug s => _2;
+            debug p => _2;
+            let _3: *mut MyStruct;
+            scope 3 {
+                debug q => _3;
+                let _5: &*mut MyStruct;
+                scope 4 {
+                    debug r => _5;
+                    let _6: *mut MyStruct;
+                    scope 5 {
+                        debug w => _6;
+                        let _7: i32;
+                        scope 6 {
+                            debug x => _7;
+                            let _8: *const i32;
+                            scope 7 {
+                                debug ptr => _8;
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
     bb0: {
-        _1 = const 0_i32;
-        _2 = copy _1;
-        goto -> bb1;
+        _1 = null_mut::<MyStruct>() -> [return: bb1, unwind continue];
     }
 
     bb1: {
-        _4 = copy _1;
-        _3 = Lt(move _4, const 40_i32);
-        switchInt(move _3) -> [0: bb5, otherwise: bb2];
-    }
-
-    bb2: {
-        _5 = copy _2;
-        _6 = copy _1;
-        _7 = AddWithOverflow(copy _5, copy _6);
-        assert(!move (_7.1: bool), "attempt to compute `{} + {}`, which would overflow", move _5, move _6) -> [success: bb3, unwind continue];
-    }
-
-    bb3: {
-        _2 = move (_7.0: i32);
-        _8 = copy _1;
-        _9 = AddWithOverflow(copy _8, const 1_i32);
-        assert(!move (_9.1: bool), "attempt to compute `{} + {}`, which would overflow", move _8, const 1_i32) -> [success: bb4, unwind continue];
-    }
-
-    bb4: {
-        _1 = move (_9.0: i32);
-        goto -> bb1;
-    }
-
-    bb5: {
-        return;
-    }
-}
-
-fn main() -> () {
-    let mut _0: ();
-    let _1: ();
-
-    bb0: {
-        _1 = fun() -> [return: bb1, unwind continue];
-    }
-
-    bb1: {
+        _2 = const 0_usize as *mut MyStruct (PointerWithExposedProvenance);
+        _4 = &_2;
+        _3 = copy (*_4);
+        _5 = &_1;
+        _6 = copy (*_5);
+        _7 = const 32_i32;
+        _9 = &_7;
+        _8 = &raw const (*_9);
         return;
     }
 }

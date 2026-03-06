@@ -6,4 +6,5 @@ extern crate rustc_middle;
 
 pub mod framework;
 pub mod internval;
+pub mod nullptr;
 pub mod sign;

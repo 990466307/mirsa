@@ -9,6 +9,9 @@ use std::collections::HashMap;
 
 pub trait StateEntries<'tcx> {
     fn entries(&self) -> Vec<(Place<'tcx>, String)>;
+    fn should_print_entry(&self, _place: Place<'tcx>) -> bool {
+        true
+    }
 }
 
 pub fn print_function_header<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) {
@@ -101,6 +104,7 @@ pub fn run_and_print_path_sensitive_analysis<'tcx, A>(
         let mut entries: Vec<(String, String)> = state
             .entries()
             .into_iter()
+            .filter(|(place, _)| state.should_print_entry(*place))
             .map(|(place, value)| (format_place_label(place, &local_names), value))
             .collect();
         entries.sort_by(|a, b| a.0.cmp(&b.0));

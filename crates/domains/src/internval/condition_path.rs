@@ -1,7 +1,7 @@
 use rustc_middle::mir::*;
 use rustc_middle::ty::{Ty, TyCtxt, TyKind};
 
-use super::abstract_value::{intersect, Internval};
+use super::abstract_value::{Internval, intersect};
 use super::state::InternvalState;
 use super::transfer::{eval_operand, internval_of_const};
 
@@ -180,12 +180,20 @@ fn refine_cmp<'tcx>(
         }
         (BinOp::Lt, true) | (BinOp::Ge, false) => {
             if let (Some(c), Operand::Copy(p) | Operand::Move(p)) = (right_singleton, left) {
-                if !refine_place_with_interval(st, *p, Internval::new(i128::MIN, c.saturating_sub(1))) {
+                if !refine_place_with_interval(
+                    st,
+                    *p,
+                    Internval::new(i128::MIN, c.saturating_sub(1)),
+                ) {
                     return None;
                 }
             }
             if let (Some(c), Operand::Copy(p) | Operand::Move(p)) = (left_singleton, right) {
-                if !refine_place_with_interval(st, *p, Internval::new(c.saturating_add(1), i128::MAX)) {
+                if !refine_place_with_interval(
+                    st,
+                    *p,
+                    Internval::new(c.saturating_add(1), i128::MAX),
+                ) {
                     return None;
                 }
             }
@@ -216,12 +224,20 @@ fn refine_cmp<'tcx>(
         }
         (BinOp::Le, false) | (BinOp::Gt, true) => {
             if let (Some(c), Operand::Copy(p) | Operand::Move(p)) = (right_singleton, left) {
-                if !refine_place_with_interval(st, *p, Internval::new(c.saturating_add(1), i128::MAX)) {
+                if !refine_place_with_interval(
+                    st,
+                    *p,
+                    Internval::new(c.saturating_add(1), i128::MAX),
+                ) {
                     return None;
                 }
             }
             if let (Some(c), Operand::Copy(p) | Operand::Move(p)) = (left_singleton, right) {
-                if !refine_place_with_interval(st, *p, Internval::new(i128::MIN, c.saturating_sub(1))) {
+                if !refine_place_with_interval(
+                    st,
+                    *p,
+                    Internval::new(i128::MIN, c.saturating_sub(1)),
+                ) {
                     return None;
                 }
             }
@@ -315,7 +331,8 @@ pub fn refine_edge<'tcx>(
                         }
 
                         if let Some(truth) = branch_truth {
-                            if let Some((op, left, right)) = find_last_cmp_assign(body, pred, *place)
+                            if let Some((op, left, right)) =
+                                find_last_cmp_assign(body, pred, *place)
                             {
                                 if refine_cmp(
                                     tcx,

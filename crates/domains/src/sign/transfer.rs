@@ -269,42 +269,40 @@ pub fn transfer_stmt<'tcx>(
             st.set_sign(dst_place, rhs_sign);
         }
 
-        Rvalue::Aggregate(kind, indexvec) => {
-            match kind.as_ref() {
-                AggregateKind::Tuple => {
-                    for (i, op) in indexvec.iter().enumerate() {
-                        let elem_place = dst_place.project_deeper(
-                            &[ProjectionElem::Field(i.into(), op.ty(local_decls, tcx))],
-                            tcx,
-                        );
-                        let elem_sign = eval_operand(tcx, local_decls, op, st);
-                        st.set_sign(elem_place, elem_sign);
-                    }
-                }
-                AggregateKind::Array(_elem_ty) => {
-                    let len = indexvec.len() as u64;
-                    for (i, op) in indexvec.iter().enumerate() {
-                        let elem_place = dst_place.project_deeper(
-                            &[ProjectionElem::ConstantIndex {
-                                offset: i as u64,
-                                min_length: len,
-                                from_end: false,
-                            }],
-                            tcx,
-                        );
-                        let elem_sign = eval_operand(tcx, local_decls, op, st);
-                        st.set_sign(elem_place, elem_sign);
-                    }
-                }
-                _ => {
-                    println!(
-                        "Warning: unhandled Aggregate kind in sign analysis: {:?}",
-                        kind
+        Rvalue::Aggregate(kind, indexvec) => match kind.as_ref() {
+            AggregateKind::Tuple => {
+                for (i, op) in indexvec.iter().enumerate() {
+                    let elem_place = dst_place.project_deeper(
+                        &[ProjectionElem::Field(i.into(), op.ty(local_decls, tcx))],
+                        tcx,
                     );
-                    st.set_sign(dst_place, Sign::Top);
+                    let elem_sign = eval_operand(tcx, local_decls, op, st);
+                    st.set_sign(elem_place, elem_sign);
                 }
             }
-        }
+            AggregateKind::Array(_elem_ty) => {
+                let len = indexvec.len() as u64;
+                for (i, op) in indexvec.iter().enumerate() {
+                    let elem_place = dst_place.project_deeper(
+                        &[ProjectionElem::ConstantIndex {
+                            offset: i as u64,
+                            min_length: len,
+                            from_end: false,
+                        }],
+                        tcx,
+                    );
+                    let elem_sign = eval_operand(tcx, local_decls, op, st);
+                    st.set_sign(elem_place, elem_sign);
+                }
+            }
+            _ => {
+                println!(
+                    "Warning: unhandled Aggregate kind in sign analysis: {:?}",
+                    kind
+                );
+                st.set_sign(dst_place, Sign::Top);
+            }
+        },
 
         Rvalue::Ref(_region, _borrow_kind, borrowed_place) => {
             let borrowed_sign = eval_place(tcx, local_decls, *borrowed_place, st);

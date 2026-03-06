@@ -1,7 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 
 use core::cfg::Cfg;
-use rustc_middle::mir::{BasicBlock, Body, LocalDecls, Statement, START_BLOCK};
+use rustc_middle::mir::{BasicBlock, Body, LocalDecls, START_BLOCK, Statement, Terminator};
 use rustc_middle::ty::TyCtxt;
 
 #[derive(Clone, Copy, Debug)]
@@ -44,6 +44,15 @@ pub trait ForwardSemantics<'tcx> {
         local_decls: &'tcx LocalDecls<'tcx>,
     );
 
+    fn transfer_terminator(
+        &self,
+        _tcx: TyCtxt<'tcx>,
+        _st: &mut Self::State,
+        _term: &Terminator<'tcx>,
+        _local_decls: &'tcx LocalDecls<'tcx>,
+    ) {
+    }
+
     fn transfer_block(
         &self,
         tcx: TyCtxt<'tcx>,
@@ -55,6 +64,9 @@ pub trait ForwardSemantics<'tcx> {
         let data = &body.basic_blocks[bb];
         for stmt in &data.statements {
             self.transfer_stmt(tcx, &mut st, stmt, &body.local_decls);
+        }
+        if let Some(term) = &data.terminator {
+            self.transfer_terminator(tcx, &mut st, term, &body.local_decls);
         }
         st
     }
@@ -127,7 +139,8 @@ where
                 let mut merged = bottom.clone();
                 for pred in &cfg.pred[item.bb.index()] {
                     let pred_state = &current.states[pred.index()];
-                    if let Some(refined) = semantics.refine_edge(tcx, body, *pred, item.bb, pred_state)
+                    if let Some(refined) =
+                        semantics.refine_edge(tcx, body, *pred, item.bb, pred_state)
                     {
                         merged = A::State::join(&merged, &refined);
                     }
@@ -138,7 +151,9 @@ where
                     None => entry.clone(),
                     Some(pred) => {
                         let pred_state = &current.states[pred.index()];
-                        let Some(refined) = semantics.refine_edge(tcx, body, pred, item.bb, pred_state) else {
+                        let Some(refined) =
+                            semantics.refine_edge(tcx, body, pred, item.bb, pred_state)
+                        else {
                             path_map.remove(&item.path_id);
                             continue;
                         };

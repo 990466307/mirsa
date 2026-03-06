@@ -265,8 +265,18 @@ pub fn refine_edge<'tcx>(
                         }
 
                         if let Some(truth) = branch_truth {
-                            if let Some((op, left, right)) = find_last_cmp_assign(body, pred, *place) {
-                                refine_cmp(tcx, &body.local_decls, &mut st, op, truth, &left, &right)?;
+                            if let Some((op, left, right)) =
+                                find_last_cmp_assign(body, pred, *place)
+                            {
+                                refine_cmp(
+                                    tcx,
+                                    &body.local_decls,
+                                    &mut st,
+                                    op,
+                                    truth,
+                                    &left,
+                                    &right,
+                                )?;
                             }
                         }
                     }

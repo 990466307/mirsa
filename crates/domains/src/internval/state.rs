@@ -1,5 +1,5 @@
-use crate::framework::printer::StateEntries;
 use crate::framework::forward::DomainState;
+use crate::framework::printer::StateEntries;
 use crate::internval::eq_domain::join_eq;
 use rustc_middle::mir::Place;
 use std::collections::HashMap;

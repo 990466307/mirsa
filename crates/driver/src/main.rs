@@ -47,15 +47,10 @@ impl Callbacks for MirCallbacks {
         for def_id in fns {
             let body = core::mir::get_optimized_mir(tcx, def_id);
             let cfg = core::cfg::build_cfg(body);
-            let places = core::mir::collect_body_places(tcx, body);
-
-            // // 获取符号分析结果
-            // domains::sign::run_sign(tcx, def_id, body, &cfg, &places);
-            // // 打印 MIR 结构（可选）
-            // print_mir_simple(tcx, def_id, body);
-
-            // 运行并打印区间分析结果
-            domains::internval::run_internval(tcx, def_id, body, &cfg, &places);
+            let places = core::mir::collect_ptr_places(tcx, body);
+            let ref_places = core::mir::collect_ref_places(tcx, body);
+            // 运行并打印空指针分析结果
+            domains::nullptr::run_nullptr(tcx, def_id, body, &cfg, &places, &ref_places);
         }
 
         Compilation::Continue
@@ -67,7 +62,9 @@ fn normalize_rustc_args(mut args: Vec<String>) -> Vec<String> {
         args[0] = "rustc".to_string();
     }
 
-    let has_emit = args.iter().any(|arg| arg == "--emit" || arg.starts_with("--emit="));
+    let has_emit = args
+        .iter()
+        .any(|arg| arg == "--emit" || arg.starts_with("--emit="));
     let has_out_dir = args
         .iter()
         .any(|arg| arg == "--out-dir" || arg.starts_with("--out-dir="));
