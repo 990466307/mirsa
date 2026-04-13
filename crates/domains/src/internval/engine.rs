@@ -87,7 +87,11 @@ fn print_unsafe_pre_states<'tcx>(
             continue;
         }
         println!("  unsafe pre-state @ bb{}:", bb.index());
-        let width = entries.iter().map(|(label, _)| label.len()).max().unwrap_or(0);
+        let width = entries
+            .iter()
+            .map(|(label, _)| label.len())
+            .max()
+            .unwrap_or(0);
         for (label, value) in entries {
             println!("    {label:width$} => {value}");
         }

@@ -102,6 +102,11 @@ pub fn collect_ref_places<'tcx>(tcx: TyCtxt<'tcx>, body: &'tcx Body<'tcx>) -> Ve
 pub fn collect_ptr_places<'tcx>(tcx: TyCtxt<'tcx>, body: &'tcx Body<'tcx>) -> Vec<Place<'tcx>> {
     collect_body_places(tcx, body)
         .into_iter()
-        .filter(|place| matches!(place.ty(&body.local_decls, tcx).ty.kind(), TyKind::RawPtr(_, _) | TyKind::FnPtr(..)))
+        .filter(|place| {
+            matches!(
+                place.ty(&body.local_decls, tcx).ty.kind(),
+                TyKind::RawPtr(_, _) | TyKind::FnPtr(..)
+            )
+        })
         .collect()
 }

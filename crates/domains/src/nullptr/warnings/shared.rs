@@ -2,9 +2,9 @@ use rustc_middle::mir::{Body, Operand};
 use rustc_middle::ty::TyCtxt;
 use rustc_span::Span;
 
+use crate::nullptr::NullPtrState;
 use crate::nullptr::abstract_value::NullPtr;
 use crate::nullptr::transfer::eval_operand;
-use crate::nullptr::NullPtrState;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum WarningLevel {

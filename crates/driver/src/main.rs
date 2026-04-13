@@ -65,13 +65,27 @@ impl Callbacks for MirCallbacks {
             match self.domain {
                 DomainSelection::All => {
                     domains::internval::run_internval(tcx, def_id, body, &cfg, &places);
-                    domains::nullptr::run_nullptr(tcx, def_id, body, &cfg, &ptr_places, &ref_places);
+                    domains::nullptr::run_nullptr(
+                        tcx,
+                        def_id,
+                        body,
+                        &cfg,
+                        &ptr_places,
+                        &ref_places,
+                    );
                 }
                 DomainSelection::Internval => {
                     domains::internval::run_internval(tcx, def_id, body, &cfg, &places);
                 }
                 DomainSelection::Nullptr => {
-                    domains::nullptr::run_nullptr(tcx, def_id, body, &cfg, &ptr_places, &ref_places);
+                    domains::nullptr::run_nullptr(
+                        tcx,
+                        def_id,
+                        body,
+                        &cfg,
+                        &ptr_places,
+                        &ref_places,
+                    );
                 }
                 DomainSelection::Sign => {
                     domains::sign::run_sign(tcx, def_id, body, &cfg, &places);

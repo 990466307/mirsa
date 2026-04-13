@@ -42,9 +42,7 @@ pub(crate) fn emit<'tcx>(
         CheckLevel::Definite => {
             "calling `NonZero::new_unchecked` with an argument that is exactly 0"
         }
-        CheckLevel::Possible => {
-            "calling `NonZero::new_unchecked` with an argument that may be 0"
-        }
+        CheckLevel::Possible => "calling `NonZero::new_unchecked` with an argument that may be 0",
         CheckLevel::Safe => unreachable!(),
     };
     emit_warning(

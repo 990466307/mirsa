@@ -368,8 +368,10 @@ pub fn transfer_stmt<'tcx>(
                 Rvalue::Cast(cast_kind, op, dst_ty) => {
                     let rhs_internval = eval_cast_internval(tcx, st, local_decls, op, *dst_ty);
                     st.set_internval(dst_place, rhs_internval);
-                    if matches!(cast_kind, CastKind::PointerCoercion(PointerCoercion::Unsize, _))
-                    {
+                    if matches!(
+                        cast_kind,
+                        CastKind::PointerCoercion(PointerCoercion::Unsize, _)
+                    ) {
                         if let Operand::Copy(src) | Operand::Move(src) = op {
                             let src_ty = src.ty(local_decls, tcx).ty;
                             if let TyKind::Ref(_, inner, _) = src_ty.kind() {

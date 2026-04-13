@@ -6,5 +6,5 @@ pub mod transfer;
 pub mod warnings;
 
 pub use abstract_value::NullPtr;
-pub use engine::run_nullptr;
+pub use engine::{analyze_nullptr, run_nullptr};
 pub use state::NullPtrState;

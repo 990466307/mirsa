@@ -5,7 +5,7 @@ use rustc_middle::ty::TyCtxt;
 use std::path::Path;
 
 use crate::framework::config::{load_bool_config, load_engine_config};
-use crate::framework::forward::{ForwardSemantics, PathForwardAnalysisConfig};
+use crate::framework::forward::{ForwardSemantics, PathForwardAnalysisConfig, PathForwardAnalysisResult};
 use crate::framework::printer::{
     StateEntries, collect_local_names, format_place_label, print_function_header,
     run_path_sensitive_analysis,
@@ -100,7 +100,11 @@ fn print_unsafe_pre_states<'tcx>(
             continue;
         }
         println!("  unsafe pre-state @ bb{}:", bb.index());
-        let width = entries.iter().map(|(label, _)| label.len()).max().unwrap_or(0);
+        let width = entries
+            .iter()
+            .map(|(label, _)| label.len())
+            .max()
+            .unwrap_or(0);
         for (label, value) in entries {
             println!("    {label:width$} => {value}");
         }
@@ -114,6 +118,21 @@ fn has_supported_unsafe_calls<'tcx>(tcx: TyCtxt<'tcx>, body: &'tcx Body<'tcx>) -
             .as_ref()
             .is_some_and(|term| is_supported_unsafe_call(tcx, body, term))
     })
+}
+
+pub fn analyze_nullptr<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    body: &'tcx Body<'tcx>,
+    cfg: &Cfg,
+    places: &[Place<'tcx>],
+    ref_places: &[Place<'tcx>],
+    config: PathForwardAnalysisConfig,
+) -> PathForwardAnalysisResult<NullPtrState<'tcx>> {
+    let semantics = NullPtrSemantics {
+        places,
+        refs: ref_places,
+    };
+    run_path_sensitive_analysis(tcx, body, cfg, &semantics, config)
 }
 
 pub fn run_nullptr<'tcx>(
@@ -130,15 +149,12 @@ pub fn run_nullptr<'tcx>(
     let config_path = Path::new("crates/domains/src/nullptr/nullptr.toml");
     let config = load_engine_config(config_path);
     let warn_on_maybe = load_bool_config(config_path, "warn_on_maybe", false);
-    let semantics = NullPtrSemantics {
-        places,
-        refs: ref_places,
-    };
-    let result = run_path_sensitive_analysis(
+    let result = analyze_nullptr(
         tcx,
         body,
         cfg,
-        &semantics,
+        places,
+        ref_places,
         PathForwardAnalysisConfig {
             max_paths: config.max_paths,
             widen_after_iterations: config.max_iterations,

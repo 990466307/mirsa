@@ -2,7 +2,6 @@
 
 ```rpl
 is_null($ptr)
-may_be_null($ptr)
 ```
 
 理由：
@@ -29,7 +28,6 @@ is_in_bounds($idx, $container)
 eq($x, $y)
 lt($x, $y)
 le($x, $y)
-same_len($a, $b)
 ```
 
 理由：

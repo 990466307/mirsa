@@ -3,6 +3,7 @@ use rustc_middle::ty::{Ty, TyCtxt, TyKind};
 
 use super::abstract_value::NullPtr;
 use super::state::{NullPtrState, get_tracked_value, is_tracked, set_tracked_value};
+use super::transfer::const_nullness;
 
 fn refine_place_to<'tcx>(
     st: &mut NullPtrState<'tcx>,
@@ -66,12 +67,7 @@ fn operand_nullness<'tcx>(
             }
         }
         Operand::Constant(c) => {
-            let si = c.const_.try_to_scalar_int()?;
-            if si.to_bits_unchecked() == 0 {
-                Some(NullPtr::Null)
-            } else {
-                Some(NullPtr::NonNull)
-            }
+            const_nullness(tcx, c)
         }
     }
 }

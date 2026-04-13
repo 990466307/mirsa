@@ -1,5 +1,5 @@
 use rustc_middle::mir::*;
-use rustc_middle::ty::{Ty, TyCtxt, TyKind};
+use rustc_middle::ty::{Ty, TyCtxt, TyKind, TypingEnv};
 
 use super::abstract_value::{NullPtr, join};
 use super::state::{
@@ -45,60 +45,44 @@ fn unknown_value_for_type(ty: Ty<'_>) -> NullPtr {
     }
 }
 
-fn bits_to_i128(bits: u128, bit_width: u64, signed: bool) -> i128 {
-    if signed {
-        if bit_width == 128 {
-            bits as i128
-        } else {
-            let shift = 128 - bit_width;
-            ((bits << shift) as i128) >> shift
-        }
-    } else if bit_width == 128 {
-        if bits <= i128::MAX as u128 {
-            bits as i128
-        } else {
-            i128::MAX
-        }
-    } else {
-        let mask = (1u128 << bit_width) - 1;
-        (bits & mask) as i128
-    }
-}
-
-fn scalar_layout<'tcx>(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> Option<(u64, bool)> {
-    match ty.kind() {
-        TyKind::Int(int_ty) => Some((
-            int_ty
-                .bit_width()
-                .unwrap_or_else(|| tcx.data_layout.pointer_size.bits()),
-            true,
-        )),
-        TyKind::Uint(uint_ty) => Some((
-            uint_ty
-                .bit_width()
-                .unwrap_or_else(|| tcx.data_layout.pointer_size.bits()),
-            false,
-        )),
-        TyKind::Bool => Some((1, false)),
-        TyKind::Char => Some((32, false)),
-        _ => None,
-    }
-}
-
-fn is_null_const<'tcx>(tcx: TyCtxt<'tcx>, c: &ConstOperand<'tcx>) -> bool {
-    let ty = c.ty();
-    let Some((bit_width, signed)) = scalar_layout(tcx, ty) else {
-        return false;
-    };
+pub(crate) fn const_nullness<'tcx>(_tcx: TyCtxt<'tcx>, c: &ConstOperand<'tcx>) -> Option<NullPtr> {
     let k = c.const_;
-    let Some(si) = k.try_to_scalar_int() else {
-        return false;
-    };
-    bits_to_i128(
-        si.to_bits_unchecked(),
-        bit_width.max(si.size().bits()),
-        signed,
-    ) == 0
+
+    if let Some(scalar) = k.try_eval_scalar(_tcx, TypingEnv::fully_monomorphized()) {
+        return Some(match scalar {
+            rustc_middle::mir::interpret::Scalar::Int(i) => {
+                if i.is_null() {
+                    NullPtr::Null
+                } else {
+                    NullPtr::NonNull
+                }
+            }
+            rustc_middle::mir::interpret::Scalar::Ptr(_, _) => NullPtr::NonNull,
+        });
+    }
+
+    if let Some(scalar) = k.try_to_scalar() {
+        return Some(match scalar {
+            rustc_middle::mir::interpret::Scalar::Int(i) => {
+                if i.is_null() {
+                    NullPtr::Null
+                } else {
+                    NullPtr::NonNull
+                }
+            }
+            rustc_middle::mir::interpret::Scalar::Ptr(_, _) => NullPtr::NonNull,
+        });
+    }
+
+    if let Some(si) = k.try_to_scalar_int() {
+        return Some(if si.to_bits_unchecked() == 0 {
+            NullPtr::Null
+        } else {
+            NullPtr::NonNull
+        });
+    }
+
+    None
 }
 
 pub(crate) fn nullptr_of_const<'tcx>(
@@ -110,10 +94,9 @@ pub(crate) fn nullptr_of_const<'tcx>(
         return NullPtr::Bot;
     }
 
-    if is_null_const(tcx, c) {
-        NullPtr::Null
-    } else {
-        NullPtr::NonNull
+    match const_nullness(tcx, c) {
+        Some(value) => value,
+        None => unknown_value_for_type(dst_ty),
     }
 }
 
@@ -159,11 +142,7 @@ fn candidate_places<'tcx>(
         .collect()
 }
 
-fn get_place_value<'tcx>(
-    st: &NullPtrState<'tcx>,
-    place: Place<'tcx>,
-    ty: Ty<'tcx>,
-) -> NullPtr {
+fn get_place_value<'tcx>(st: &NullPtrState<'tcx>, place: Place<'tcx>, ty: Ty<'tcx>) -> NullPtr {
     if !has_runtime_index(place) {
         return get_tracked_value(st, place, ty);
     }
@@ -173,9 +152,9 @@ fn get_place_value<'tcx>(
         return unknown_value_for_type(ty);
     }
 
-    candidates
-        .into_iter()
-        .fold(NullPtr::Bot, |acc, candidate| join(acc, get_tracked_value(st, candidate, ty)))
+    candidates.into_iter().fold(NullPtr::Bot, |acc, candidate| {
+        join(acc, get_tracked_value(st, candidate, ty))
+    })
 }
 
 fn weak_set_place_value<'tcx>(
@@ -239,11 +218,7 @@ fn eval_cast_nullptr<'tcx>(
     }
     match op {
         Operand::Constant(c) => {
-            if is_null_const(tcx, c) {
-                NullPtr::Null
-            } else {
-                NullPtr::NonNull
-            }
+            const_nullness(tcx, c).unwrap_or_else(|| unknown_value_for_type(dst_ty))
         }
         _ => unknown_value_for_type(dst_ty),
     }
@@ -289,10 +264,8 @@ pub fn transfer_stmt<'tcx>(
                     if !is_tracked(field_ty) {
                         continue;
                     }
-                    let field_place = place.project_deeper(
-                        &[ProjectionElem::Field(i.into(), field_ty)],
-                        tcx,
-                    );
+                    let field_place =
+                        place.project_deeper(&[ProjectionElem::Field(i.into(), field_ty)], tcx);
                     let value = eval_operand(tcx, local_decls, op, st, field_ty);
                     set_tracked_value(st, field_place, field_ty, value);
                 }
@@ -328,7 +301,9 @@ pub fn transfer_stmt<'tcx>(
 
     let value = match rvalue {
         Rvalue::Use(op) => eval_operand(tcx, local_decls, op, st, dst_ty),
-        Rvalue::Ref(_, _, borrowed_place) => get_place_value(st, *borrowed_place, borrowed_place.ty(local_decls, tcx).ty),
+        Rvalue::Ref(_, _, borrowed_place) => {
+            get_place_value(st, *borrowed_place, borrowed_place.ty(local_decls, tcx).ty)
+        }
         Rvalue::RawPtr(_, borrowed_place) => {
             if let Some(base) = base_of_first_deref(tcx, *borrowed_place) {
                 let base_ty = base.ty(local_decls, tcx).ty;

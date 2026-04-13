@@ -194,8 +194,16 @@ pub fn join_state<'tcx>(
         out.internval.insert(*k, join(&ia, &ib));
     }
     for k in a.slice_meta.keys().chain(b.slice_meta.keys()) {
-        let ia = a.slice_meta.get(k).copied().unwrap_or_else(Internval::empty);
-        let ib = b.slice_meta.get(k).copied().unwrap_or_else(Internval::empty);
+        let ia = a
+            .slice_meta
+            .get(k)
+            .copied()
+            .unwrap_or_else(Internval::empty);
+        let ib = b
+            .slice_meta
+            .get(k)
+            .copied()
+            .unwrap_or_else(Internval::empty);
         out.slice_meta.insert(*k, join(&ia, &ib));
     }
     out.eq = join_eq(&a.eq, &b.eq);
@@ -214,8 +222,16 @@ pub fn widen_state<'tcx>(
         out.internval.insert(*k, widened);
     }
     for k in a.slice_meta.keys().chain(b.slice_meta.keys()) {
-        let ia = a.slice_meta.get(k).copied().unwrap_or_else(Internval::empty);
-        let ib = b.slice_meta.get(k).copied().unwrap_or_else(Internval::empty);
+        let ia = a
+            .slice_meta
+            .get(k)
+            .copied()
+            .unwrap_or_else(Internval::empty);
+        let ib = b
+            .slice_meta
+            .get(k)
+            .copied()
+            .unwrap_or_else(Internval::empty);
         out.slice_meta.insert(*k, widen(&ia, &ib));
     }
     out.eq = join_eq(&a.eq, &b.eq);
