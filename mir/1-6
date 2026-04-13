@@ -1,0 +1,159 @@
+// WARNING: This output format is intended for human consumers only
+// and is subject to change without notice. Knock yourself out.
+fn main() -> () {
+    let mut _0: ();
+    let _1: [u16; 1];
+    let mut _4: &u16;
+    let mut _5: &[u16];
+    let mut _6: &[u16; 1];
+    let mut _7: bool;
+    let mut _8: &std::ops::RangeInclusive<u16>;
+    let _9: &u16;
+    let mut _10: [u16; 2];
+    let mut _11: u16;
+    let mut _12: &u16;
+    let mut _13: &[u16];
+    let mut _14: &[u16; 1];
+    let mut _15: [u16; 2];
+    let mut _19: &u16;
+    let mut _20: &[u16];
+    let mut _21: &[u16; 2];
+    let mut _22: bool;
+    let mut _23: &std::ops::RangeInclusive<u16>;
+    let _24: &u16;
+    let mut _25: [u16; 2];
+    let mut _26: u16;
+    let mut _27: &u16;
+    let mut _28: &[u16];
+    let mut _29: &[u16; 2];
+    let mut _30: [u16; 2];
+    scope 1 {
+        debug bad_src => _1;
+        let _2: ([u16; 2], usize);
+        let _3: u16;
+        scope 2 {
+            debug _bad => _2;
+            let _16: [u16; 2];
+            scope 4 {
+                debug good_src => _16;
+                let _17: ([u16; 2], usize);
+                let _18: u16;
+                scope 5 {
+                    debug _good => _17;
+                }
+                scope 6 {
+                    debug first => _18;
+                }
+            }
+        }
+        scope 3 {
+            debug first => _3;
+        }
+    }
+
+    bb0: {
+        _1 = [const 55296_u16];
+        _6 = &_1;
+        _5 = move _6 as &[u16] (PointerCoercion(Unsize, Implicit));
+        _4 = core::slice::<impl [u16]>::get_unchecked::<usize>(move _5, const 0_usize) -> [return: bb1, unwind continue];
+    }
+
+    bb1: {
+        _3 = copy (*_4);
+        _8 = const main::promoted[1];
+        _9 = &_3;
+        _7 = std::ops::RangeInclusive::<u16>::contains::<u16>(move _8, copy _9) -> [return: bb2, unwind continue];
+    }
+
+    bb2: {
+        switchInt(move _7) -> [0: bb5, otherwise: bb3];
+    }
+
+    bb3: {
+        _14 = &_1;
+        _13 = move _14 as &[u16] (PointerCoercion(Unsize, Implicit));
+        _12 = core::slice::<impl [u16]>::get_unchecked::<usize>(move _13, const 1_usize) -> [return: bb4, unwind continue];
+    }
+
+    bb4: {
+        _11 = copy (*_12);
+        _10 = [copy _3, move _11];
+        _2 = (move _10, const 2_usize);
+        goto -> bb6;
+    }
+
+    bb5: {
+        _15 = [copy _3, const 0_u16];
+        _2 = (move _15, const 1_usize);
+        goto -> bb6;
+    }
+
+    bb6: {
+        _16 = [const 55357_u16, const 56832_u16];
+        _21 = &_16;
+        _20 = move _21 as &[u16] (PointerCoercion(Unsize, Implicit));
+        _19 = core::slice::<impl [u16]>::get_unchecked::<usize>(move _20, const 0_usize) -> [return: bb7, unwind continue];
+    }
+
+    bb7: {
+        _18 = copy (*_19);
+        _23 = const main::promoted[0];
+        _24 = &_18;
+        _22 = std::ops::RangeInclusive::<u16>::contains::<u16>(move _23, copy _24) -> [return: bb8, unwind continue];
+    }
+
+    bb8: {
+        switchInt(move _22) -> [0: bb11, otherwise: bb9];
+    }
+
+    bb9: {
+        _29 = &_16;
+        _28 = move _29 as &[u16] (PointerCoercion(Unsize, Implicit));
+        _27 = core::slice::<impl [u16]>::get_unchecked::<usize>(move _28, const 1_usize) -> [return: bb10, unwind continue];
+    }
+
+    bb10: {
+        _26 = copy (*_27);
+        _25 = [copy _18, move _26];
+        _17 = (move _25, const 2_usize);
+        goto -> bb12;
+    }
+
+    bb11: {
+        _30 = [copy _18, const 0_u16];
+        _17 = (move _30, const 1_usize);
+        goto -> bb12;
+    }
+
+    bb12: {
+        return;
+    }
+}
+
+const main::promoted[0]: &std::ops::RangeInclusive<u16> = {
+    let mut _0: &std::ops::RangeInclusive<u16>;
+    let mut _1: std::ops::RangeInclusive<u16>;
+
+    bb0: {
+        _1 = std::ops::RangeInclusive::<u16>::new(const 55296_u16, const 56319_u16) -> [return: bb1, unwind continue];
+    }
+
+    bb1: {
+        _0 = &_1;
+        return;
+    }
+}
+
+const main::promoted[1]: &std::ops::RangeInclusive<u16> = {
+    let mut _0: &std::ops::RangeInclusive<u16>;
+    let mut _1: std::ops::RangeInclusive<u16>;
+
+    bb0: {
+        _1 = std::ops::RangeInclusive::<u16>::new(const 55296_u16, const 56319_u16) -> [return: bb1, unwind continue];
+    }
+
+    bb1: {
+        _0 = &_1;
+        return;
+    }
+}

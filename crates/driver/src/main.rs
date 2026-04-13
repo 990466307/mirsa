@@ -5,11 +5,21 @@ extern crate rustc_hir;
 extern crate rustc_interface;
 extern crate rustc_middle;
 
+use core::mir::collect_body_places;
+
 use rustc_driver::{Callbacks, Compilation, run_compiler};
 use rustc_middle::ty::TyCtxt;
 
 use rustc_hir::def_id::DefId;
 use rustc_middle::mir::Body;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DomainSelection {
+    All,
+    Internval,
+    Nullptr,
+    Sign,
+}
 
 /// 打印 MIR：
 /// - 函数名
@@ -34,7 +44,9 @@ pub fn print_mir_simple<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId, body: &Body<'tcx
     }
 }
 
-struct MirCallbacks;
+struct MirCallbacks {
+    domain: DomainSelection,
+}
 
 impl Callbacks for MirCallbacks {
     fn after_analysis(
@@ -47,10 +59,24 @@ impl Callbacks for MirCallbacks {
         for def_id in fns {
             let body = core::mir::get_optimized_mir(tcx, def_id);
             let cfg = core::cfg::build_cfg(body);
-            let places = core::mir::collect_ptr_places(tcx, body);
+            let places = collect_body_places(tcx, body);
+            let ptr_places = core::mir::collect_ptr_places(tcx, body);
             let ref_places = core::mir::collect_ref_places(tcx, body);
-            // 运行并打印空指针分析结果
-            domains::nullptr::run_nullptr(tcx, def_id, body, &cfg, &places, &ref_places);
+            match self.domain {
+                DomainSelection::All => {
+                    domains::internval::run_internval(tcx, def_id, body, &cfg, &places);
+                    domains::nullptr::run_nullptr(tcx, def_id, body, &cfg, &ptr_places, &ref_places);
+                }
+                DomainSelection::Internval => {
+                    domains::internval::run_internval(tcx, def_id, body, &cfg, &places);
+                }
+                DomainSelection::Nullptr => {
+                    domains::nullptr::run_nullptr(tcx, def_id, body, &cfg, &ptr_places, &ref_places);
+                }
+                DomainSelection::Sign => {
+                    domains::sign::run_sign(tcx, def_id, body, &cfg, &places);
+                }
+            }
         }
 
         Compilation::Continue
@@ -82,8 +108,40 @@ fn normalize_rustc_args(mut args: Vec<String>) -> Vec<String> {
     args
 }
 
+fn parse_driver_args(args: Vec<String>) -> (DomainSelection, Vec<String>) {
+    let mut domain = DomainSelection::All;
+    let mut filtered = Vec::with_capacity(args.len());
+    let mut i = 0usize;
+    while i < args.len() {
+        if args[i] == "--domain" {
+            let Some(value) = args.get(i + 1) else {
+                eprintln!("error: missing value for `--domain`");
+                std::process::exit(2);
+            };
+            domain = match value.as_str() {
+                "all" => DomainSelection::All,
+                "internval" => DomainSelection::Internval,
+                "nullptr" => DomainSelection::Nullptr,
+                "sign" => DomainSelection::Sign,
+                other => {
+                    eprintln!(
+                        "error: unsupported domain `{other}`, expected one of: all, internval, nullptr, sign"
+                    );
+                    std::process::exit(2);
+                }
+            };
+            i += 2;
+            continue;
+        }
+        filtered.push(args[i].clone());
+        i += 1;
+    }
+    (domain, filtered)
+}
+
 fn main() {
-    let args = normalize_rustc_args(std::env::args().collect());
-    let mut callbacks = MirCallbacks;
+    let (domain, args) = parse_driver_args(std::env::args().collect());
+    let args = normalize_rustc_args(args);
+    let mut callbacks = MirCallbacks { domain };
     run_compiler(&args, &mut callbacks);
 }

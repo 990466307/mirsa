@@ -1,0 +1,287 @@
+// WARNING: This output format is intended for human consumers only
+// and is subject to change without notice. Knock yourself out.
+fn main() -> () {
+    let mut _0: ();
+    let mut _1: [u16; 128];
+    let _2: usize;
+    let mut _3: (usize, bool);
+    let mut _4: bool;
+    let _5: usize;
+    let mut _6: (usize, bool);
+    let mut _7: bool;
+    let mut _11: bool;
+    let mut _12: usize;
+    let mut _13: usize;
+    let mut _14: &[u8];
+    let mut _15: &[u8; 2];
+    let mut _17: usize;
+    let mut _18: u8;
+    let _19: usize;
+    let mut _20: bool;
+    let mut _21: usize;
+    let mut _22: (usize, bool);
+    let mut _24: &u16;
+    let mut _25: &[u16];
+    let mut _26: &[u16; 128];
+    let mut _27: usize;
+    let mut _28: usize;
+    let mut _29: (usize, bool);
+    let mut _30: bool;
+    let mut _31: u16;
+    let mut _32: usize;
+    let mut _33: (usize, bool);
+    let mut _36: bool;
+    let mut _37: usize;
+    let mut _38: usize;
+    let mut _39: &[u8];
+    let mut _40: &[u8; 2];
+    let mut _42: u8;
+    let _43: usize;
+    let mut _44: bool;
+    let mut _45: usize;
+    let mut _46: (usize, bool);
+    let mut _48: &u16;
+    let mut _49: &[u16];
+    let mut _50: &[u16; 128];
+    let mut _51: usize;
+    let mut _52: (usize, bool);
+    let mut _53: bool;
+    let mut _54: u16;
+    let mut _55: (usize, bool);
+    scope 1 {
+        debug table => _1;
+        let _8: [u8; 2];
+        scope 2 {
+            debug buffer => _8;
+            let mut _9: usize;
+            scope 3 {
+                debug bad_total => _9;
+                let _10: usize;
+                scope 4 {
+                    debug _bad => _10;
+                    let mut _34: usize;
+                    scope 8 {
+                        debug good_total => _34;
+                        let _35: usize;
+                        scope 9 {
+                            debug _good => _35;
+                        }
+                        scope 10 {
+                            debug offset => const 0_usize;
+                            let _41: usize;
+                            scope 11 {
+                                debug non_ascii => _41;
+                                let _47: u16;
+                                scope 12 {
+                                    debug mapped => _47;
+                                }
+                            }
+                        }
+                    }
+                }
+                scope 5 {
+                    debug offset => const 0_usize;
+                    let _16: usize;
+                    scope 6 {
+                        debug non_ascii => _16;
+                        let _23: u16;
+                        scope 7 {
+                            debug mapped => _23;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    bb0: {
+        _1 = [const 0_u16; 128];
+        _3 = SubWithOverflow(const 193_usize, const 128_usize);
+        assert(!move (_3.1: bool), "attempt to compute `{} - {}`, which would overflow", const 193_usize, const 128_usize) -> [success: bb1, unwind continue];
+    }
+
+    bb1: {
+        _2 = move (_3.0: usize);
+        _4 = Lt(copy _2, const 128_usize);
+        assert(move _4, "index out of bounds: the length is {} but the index is {}", const 128_usize, copy _2) -> [success: bb2, unwind continue];
+    }
+
+    bb2: {
+        _1[_2] = const 193_u16;
+        _6 = SubWithOverflow(const 194_usize, const 128_usize);
+        assert(!move (_6.1: bool), "attempt to compute `{} - {}`, which would overflow", const 194_usize, const 128_usize) -> [success: bb3, unwind continue];
+    }
+
+    bb3: {
+        _5 = move (_6.0: usize);
+        _7 = Lt(copy _5, const 128_usize);
+        assert(move _7, "index out of bounds: the length is {} but the index is {}", const 128_usize, copy _5) -> [success: bb4, unwind continue];
+    }
+
+    bb4: {
+        _1[_5] = const 194_u16;
+        _8 = [const 193_u8, const 194_u8];
+        _9 = const 0_usize;
+        goto -> bb5;
+    }
+
+    bb5: {
+        _12 = copy _9;
+        _15 = &_8;
+        _14 = move _15 as &[u8] (PointerCoercion(Unsize, Implicit));
+        _13 = PtrMetadata(move _14);
+        _11 = Ge(move _12, move _13);
+        switchInt(move _11) -> [0: bb7, otherwise: bb6];
+    }
+
+    bb6: {
+        _10 = copy _9;
+        goto -> bb18;
+    }
+
+    bb7: {
+        _17 = copy _9;
+        switchInt(move _17) -> [0: bb8, otherwise: bb9];
+    }
+
+    bb8: {
+        _19 = copy _9;
+        _20 = Lt(copy _19, const 2_usize);
+        assert(move _20, "index out of bounds: the length is {} but the index is {}", const 2_usize, copy _19) -> [success: bb10, unwind continue];
+    }
+
+    bb9: {
+        _16 = const 256_usize;
+        goto -> bb11;
+    }
+
+    bb10: {
+        _18 = copy _8[_19];
+        _16 = move _18 as usize (IntToInt);
+        goto -> bb11;
+    }
+
+    bb11: {
+        _21 = const 0_usize;
+        _22 = AddWithOverflow(copy _9, copy _21);
+        assert(!move (_22.1: bool), "attempt to compute `{} + {}`, which would overflow", copy _9, move _21) -> [success: bb12, unwind continue];
+    }
+
+    bb12: {
+        _9 = move (_22.0: usize);
+        _26 = &_1;
+        _25 = move _26 as &[u16] (PointerCoercion(Unsize, Implicit));
+        _28 = copy _16;
+        _29 = SubWithOverflow(copy _28, const 128_usize);
+        assert(!move (_29.1: bool), "attempt to compute `{} - {}`, which would overflow", move _28, const 128_usize) -> [success: bb13, unwind continue];
+    }
+
+    bb13: {
+        _27 = move (_29.0: usize);
+        _24 = core::slice::<impl [u16]>::get_unchecked::<usize>(move _25, move _27) -> [return: bb14, unwind continue];
+    }
+
+    bb14: {
+        _23 = copy (*_24);
+        _32 = copy _16;
+        _31 = move _32 as u16 (IntToInt);
+        _30 = Ne(copy _23, move _31);
+        switchInt(move _30) -> [0: bb16, otherwise: bb15];
+    }
+
+    bb15: {
+        _10 = copy _9;
+        goto -> bb18;
+    }
+
+    bb16: {
+        _33 = AddWithOverflow(copy _9, const 1_usize);
+        assert(!move (_33.1: bool), "attempt to compute `{} + {}`, which would overflow", copy _9, const 1_usize) -> [success: bb17, unwind continue];
+    }
+
+    bb17: {
+        _9 = move (_33.0: usize);
+        goto -> bb5;
+    }
+
+    bb18: {
+        _34 = const 0_usize;
+        goto -> bb19;
+    }
+
+    bb19: {
+        _37 = copy _34;
+        _40 = &_8;
+        _39 = move _40 as &[u8] (PointerCoercion(Unsize, Implicit));
+        _38 = PtrMetadata(move _39);
+        _36 = Ge(move _37, move _38);
+        switchInt(move _36) -> [0: bb21, otherwise: bb20];
+    }
+
+    bb20: {
+        _35 = copy _34;
+        goto -> bb29;
+    }
+
+    bb21: {
+        _43 = copy _34;
+        _44 = Lt(copy _43, const 2_usize);
+        assert(move _44, "index out of bounds: the length is {} but the index is {}", const 2_usize, copy _43) -> [success: bb22, unwind continue];
+    }
+
+    bb22: {
+        _42 = copy _8[_43];
+        _41 = move _42 as usize (IntToInt);
+        _45 = const 0_usize;
+        _46 = AddWithOverflow(copy _34, copy _45);
+        assert(!move (_46.1: bool), "attempt to compute `{} + {}`, which would overflow", copy _34, move _45) -> [success: bb23, unwind continue];
+    }
+
+    bb23: {
+        _34 = move (_46.0: usize);
+        _50 = &_1;
+        _49 = move _50 as &[u16] (PointerCoercion(Unsize, Implicit));
+        _52 = SubWithOverflow(copy _41, const 128_usize);
+        assert(!move (_52.1: bool), "attempt to compute `{} - {}`, which would overflow", copy _41, const 128_usize) -> [success: bb24, unwind continue];
+    }
+
+    bb24: {
+        _51 = move (_52.0: usize);
+        _48 = core::slice::<impl [u16]>::get_unchecked::<usize>(move _49, move _51) -> [return: bb25, unwind continue];
+    }
+
+    bb25: {
+        _47 = copy (*_48);
+        _54 = copy _41 as u16 (IntToInt);
+        _53 = Ne(copy _47, move _54);
+        switchInt(move _53) -> [0: bb27, otherwise: bb26];
+    }
+
+    bb26: {
+        _35 = copy _34;
+        goto -> bb29;
+    }
+
+    bb27: {
+        _55 = AddWithOverflow(copy _34, const 1_usize);
+        assert(!move (_55.1: bool), "attempt to compute `{} + {}`, which would overflow", copy _34, const 1_usize) -> [success: bb28, unwind continue];
+    }
+
+    bb28: {
+        _34 = move (_55.0: usize);
+        goto -> bb19;
+    }
+
+    bb29: {
+        return;
+    }
+}
+
+main::{constant#0}: usize = {
+    let mut _0: usize;
+
+    bb0: {
+        _0 = const 128_usize;
+        return;
+    }
+}

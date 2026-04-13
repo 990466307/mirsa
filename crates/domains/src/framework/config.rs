@@ -49,6 +49,28 @@ fn parse_optional_u32_config_value(key: &str, value: &str) -> Option<Option<u32>
     parse_u32_config_value(key, trimmed).map(Some)
 }
 
+fn parse_bool_config_value(key: &str, value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => {
+            println!(
+                "Warning: invalid config value for `{}`: `{}`; using default.",
+                key,
+                value.trim()
+            );
+            None
+        }
+    }
+}
+
+pub fn load_bool_config(path: &Path, key: &str, default: bool) -> bool {
+    let map = load_key_value_config(path);
+    map.get(key)
+        .and_then(|value| parse_bool_config_value(key, value))
+        .unwrap_or(default)
+}
+
 pub fn load_engine_config(path: &Path) -> EngineConfig {
     let mut cfg = EngineConfig {
         max_paths: 10,

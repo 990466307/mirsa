@@ -1,20 +1,28 @@
 #![allow(dead_code, unused_variables)]
 
-use std::ptr::NonNull;
-
-struct MyStruct {
-    value: i32,
-}
-
 fn main() {
-    let raw_ptr: *mut MyStruct = std::ptr::null_mut(); // 创建一个空指针
-    let p: *mut MyStruct = 0 as *mut MyStruct;
-    let q = p.clone();
-    let r = &raw_ptr;
-    let w = *r;
-    let x = 32;
-    let ptr: *const i32 = &x;
-    let non_null_ptr1 = unsafe { NonNull::new_unchecked(raw_ptr) };
-    // let non_null_ptr2 = unsafe { NonNull::new_unchecked(p) };
-    // let non_null_ptr3 = unsafe { NonNull::new_unchecked(q) };
+    let a = 1i32;
+    let b = 2i32;
+    let mut c = a + b;
+    let d = c - 3;
+
+    if d == 0 {
+        c = c + 10;
+    } else {
+        c = c - 10;
+    }
+
+    let mut arr = [0i32, 1, 2];
+    let idx = 1usize;
+    arr[idx] = c;
+    let e = arr[idx];
+
+    if e > 0 {
+        c = e + 3;
+    } else {
+        c = e - 3;
+    }
+
+    let f = c as i64;
+    let g = f as i32;
 }

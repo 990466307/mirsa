@@ -17,11 +17,18 @@ impl<'tcx> SignState<'tcx> {
             locals: HashMap::new(),
         }
     }
-    pub fn new_bot_state(places: &[Place<'tcx>]) -> Self {
+
+    pub fn new_bot_state(places: &[Place<'tcx>], arg_count: usize) -> Self {
         let mut locals = HashMap::new();
 
         for place in places {
-            locals.insert(*place, Sign::Bot);
+            let local_idx = place.local.index();
+            let value = if local_idx >= 1 && local_idx <= arg_count {
+                Sign::Top
+            } else {
+                Sign::Bot
+            };
+            locals.insert(*place, value);
         }
 
         SignState { locals }

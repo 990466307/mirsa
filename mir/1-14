@@ -1,0 +1,228 @@
+// WARNING: This output format is intended for human consumers only
+// and is subject to change without notice. Knock yourself out.
+fn main() -> () {
+    let mut _0: ();
+    let mut _1: [u8; 4];
+    let mut _4: usize;
+    let mut _5: usize;
+    let mut _6: (usize, bool);
+    let mut _7: std::ops::Range<usize>;
+    let mut _8: std::ops::Range<usize>;
+    let mut _10: std::option::Option<usize>;
+    let mut _11: &mut std::ops::Range<usize>;
+    let mut _12: isize;
+    let mut _15: &u8;
+    let mut _16: &[u8];
+    let mut _17: &[u8; 4];
+    let mut _18: usize;
+    let mut _19: usize;
+    let mut _20: (usize, bool);
+    let mut _21: &mut u8;
+    let mut _22: &mut [u8];
+    let mut _23: &mut [u8; 4];
+    let mut _24: usize;
+    let mut _25: usize;
+    let mut _26: (usize, bool);
+    let mut _29: usize;
+    let mut _30: usize;
+    let mut _31: (usize, bool);
+    let mut _32: std::ops::Range<usize>;
+    let mut _33: std::ops::Range<usize>;
+    let mut _35: std::option::Option<usize>;
+    let mut _36: &mut std::ops::Range<usize>;
+    let mut _37: isize;
+    let mut _40: &u8;
+    let mut _41: &[u8];
+    let mut _42: &[u8; 4];
+    let mut _43: usize;
+    let mut _44: usize;
+    let mut _45: (usize, bool);
+    let mut _46: &mut u8;
+    let mut _47: &mut [u8];
+    let mut _48: &mut [u8; 4];
+    let mut _49: usize;
+    let mut _50: usize;
+    let mut _51: (usize, bool);
+    scope 1 {
+        debug bits => _1;
+        let _2: std::ops::Range<usize>;
+        scope 2 {
+            debug bad_src => _2;
+            scope 3 {
+                debug bad_dest => const 3_usize;
+                let _3: usize;
+                let _27: std::ops::Range<usize>;
+                scope 4 {
+                    debug src_len => _3;
+                    let mut _9: std::ops::Range<usize>;
+                    scope 5 {
+                        debug iter => _9;
+                        let _13: usize;
+                        scope 6 {
+                            debug i => _13;
+                            let _14: u8;
+                            scope 7 {
+                                debug value => _14;
+                            }
+                        }
+                    }
+                }
+                scope 8 {
+                    debug good_src => _27;
+                    scope 9 {
+                        debug good_dest => const 2_usize;
+                        let _28: usize;
+                        scope 10 {
+                            debug src_len => _28;
+                            let mut _34: std::ops::Range<usize>;
+                            scope 11 {
+                                debug iter => _34;
+                                let _38: usize;
+                                scope 12 {
+                                    debug i => _38;
+                                    let _39: u8;
+                                    scope 13 {
+                                        debug value => _39;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    bb0: {
+        _1 = [const 1_u8, const 2_u8, const 3_u8, const 4_u8];
+        _2 = std::ops::Range::<usize> { start: const 1_usize, end: const 3_usize };
+        _4 = copy (_2.1: usize);
+        _5 = copy (_2.0: usize);
+        _6 = SubWithOverflow(copy _4, copy _5);
+        assert(!move (_6.1: bool), "attempt to compute `{} - {}`, which would overflow", move _4, move _5) -> [success: bb1, unwind continue];
+    }
+
+    bb1: {
+        _3 = move (_6.0: usize);
+        _8 = std::ops::Range::<usize> { start: const 0_usize, end: copy _3 };
+        _7 = <std::ops::Range<usize> as IntoIterator>::into_iter(move _8) -> [return: bb2, unwind continue];
+    }
+
+    bb2: {
+        _9 = move _7;
+        goto -> bb3;
+    }
+
+    bb3: {
+        _11 = &mut _9;
+        _10 = <std::ops::Range<usize> as Iterator>::next(copy _11) -> [return: bb4, unwind continue];
+    }
+
+    bb4: {
+        _12 = discriminant(_10);
+        switchInt(move _12) -> [0: bb7, 1: bb6, otherwise: bb5];
+    }
+
+    bb5: {
+        unreachable;
+    }
+
+    bb6: {
+        _13 = copy ((_10 as Some).0: usize);
+        _17 = &_1;
+        _16 = move _17 as &[u8] (PointerCoercion(Unsize, Implicit));
+        _19 = copy (_2.0: usize);
+        _20 = AddWithOverflow(copy _19, copy _13);
+        assert(!move (_20.1: bool), "attempt to compute `{} + {}`, which would overflow", move _19, copy _13) -> [success: bb8, unwind continue];
+    }
+
+    bb7: {
+        _27 = std::ops::Range::<usize> { start: const 0_usize, end: const 2_usize };
+        _29 = copy (_27.1: usize);
+        _30 = copy (_27.0: usize);
+        _31 = SubWithOverflow(copy _29, copy _30);
+        assert(!move (_31.1: bool), "attempt to compute `{} - {}`, which would overflow", move _29, move _30) -> [success: bb12, unwind continue];
+    }
+
+    bb8: {
+        _18 = move (_20.0: usize);
+        _15 = core::slice::<impl [u8]>::get_unchecked::<usize>(move _16, move _18) -> [return: bb9, unwind continue];
+    }
+
+    bb9: {
+        _14 = copy (*_15);
+        _23 = &mut _1;
+        _22 = move _23 as &mut [u8] (PointerCoercion(Unsize, Implicit));
+        _25 = const 3_usize;
+        _26 = AddWithOverflow(copy _25, copy _13);
+        assert(!move (_26.1: bool), "attempt to compute `{} + {}`, which would overflow", move _25, copy _13) -> [success: bb10, unwind continue];
+    }
+
+    bb10: {
+        _24 = move (_26.0: usize);
+        _21 = core::slice::<impl [u8]>::get_unchecked_mut::<usize>(move _22, move _24) -> [return: bb11, unwind continue];
+    }
+
+    bb11: {
+        (*_21) = copy _14;
+        goto -> bb3;
+    }
+
+    bb12: {
+        _28 = move (_31.0: usize);
+        _33 = std::ops::Range::<usize> { start: const 0_usize, end: copy _28 };
+        _32 = <std::ops::Range<usize> as IntoIterator>::into_iter(move _33) -> [return: bb13, unwind continue];
+    }
+
+    bb13: {
+        _34 = move _32;
+        goto -> bb14;
+    }
+
+    bb14: {
+        _36 = &mut _34;
+        _35 = <std::ops::Range<usize> as Iterator>::next(copy _36) -> [return: bb15, unwind continue];
+    }
+
+    bb15: {
+        _37 = discriminant(_35);
+        switchInt(move _37) -> [0: bb17, 1: bb16, otherwise: bb5];
+    }
+
+    bb16: {
+        _38 = copy ((_35 as Some).0: usize);
+        _42 = &_1;
+        _41 = move _42 as &[u8] (PointerCoercion(Unsize, Implicit));
+        _44 = copy (_27.0: usize);
+        _45 = AddWithOverflow(copy _44, copy _38);
+        assert(!move (_45.1: bool), "attempt to compute `{} + {}`, which would overflow", move _44, copy _38) -> [success: bb18, unwind continue];
+    }
+
+    bb17: {
+        return;
+    }
+
+    bb18: {
+        _43 = move (_45.0: usize);
+        _40 = core::slice::<impl [u8]>::get_unchecked::<usize>(move _41, move _43) -> [return: bb19, unwind continue];
+    }
+
+    bb19: {
+        _39 = copy (*_40);
+        _48 = &mut _1;
+        _47 = move _48 as &mut [u8] (PointerCoercion(Unsize, Implicit));
+        _50 = const 2_usize;
+        _51 = AddWithOverflow(copy _50, copy _38);
+        assert(!move (_51.1: bool), "attempt to compute `{} + {}`, which would overflow", move _50, copy _38) -> [success: bb20, unwind continue];
+    }
+
+    bb20: {
+        _49 = move (_51.0: usize);
+        _46 = core::slice::<impl [u8]>::get_unchecked_mut::<usize>(move _47, move _49) -> [return: bb21, unwind continue];
+    }
+
+    bb21: {
+        (*_46) = copy _39;
+        goto -> bb14;
+    }
+}

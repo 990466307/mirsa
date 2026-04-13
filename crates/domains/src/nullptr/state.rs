@@ -1,6 +1,7 @@
 use crate::framework::forward::DomainState;
 use crate::framework::printer::StateEntries;
 use rustc_middle::mir::Place;
+use rustc_middle::ty::{Ty, TyKind};
 use std::collections::HashMap;
 use std::fmt;
 
@@ -38,8 +39,13 @@ impl<'tcx> NullPtrState<'tcx> {
         }
 
         for ref_item in ref_places {
-            let _ = arg_count;
-            refs.insert(*ref_item, NullPtr::Bot);
+            let local_idx = ref_item.local.index();
+            let value = if local_idx >= 1 && local_idx <= arg_count {
+                NullPtr::MaybeNull
+            } else {
+                NullPtr::Bot
+            };
+            refs.insert(*ref_item, value);
         }
 
         NullPtrState { pointers, refs }
@@ -59,6 +65,45 @@ impl<'tcx> NullPtrState<'tcx> {
 
     pub fn set_ref(&mut self, place: Place<'tcx>, value: NullPtr) {
         self.refs.insert(place, value);
+    }
+}
+
+pub(crate) fn is_ptr_like(ty: Ty<'_>) -> bool {
+    matches!(ty.kind(), TyKind::RawPtr(_, _) | TyKind::FnPtr(..))
+}
+
+pub(crate) fn is_ref_like(ty: Ty<'_>) -> bool {
+    matches!(ty.kind(), TyKind::Ref(_, _, _))
+}
+
+pub(crate) fn is_tracked(ty: Ty<'_>) -> bool {
+    is_ptr_like(ty) || is_ref_like(ty)
+}
+
+pub(crate) fn get_tracked_value<'tcx>(
+    st: &NullPtrState<'tcx>,
+    place: Place<'tcx>,
+    ty: Ty<'tcx>,
+) -> NullPtr {
+    if is_ref_like(ty) {
+        st.get_ref(&place)
+    } else if is_ptr_like(ty) {
+        st.get_nullptr(&place)
+    } else {
+        NullPtr::Bot
+    }
+}
+
+pub(crate) fn set_tracked_value<'tcx>(
+    st: &mut NullPtrState<'tcx>,
+    place: Place<'tcx>,
+    ty: Ty<'tcx>,
+    value: NullPtr,
+) {
+    if is_ref_like(ty) {
+        st.set_ref(place, value);
+    } else if is_ptr_like(ty) {
+        st.set_nullptr(place, value);
     }
 }
 

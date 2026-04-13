@@ -1,64 +1,9 @@
 use rustc_middle::mir::*;
-use rustc_middle::ty::{Ty, TyCtxt, TyKind};
+use rustc_middle::ty::{TyCtxt, TyKind};
 
 use super::abstract_value::{Internval, intersect};
-use super::state::InternvalState;
+use super::state::{InternvalState, switch_value_to_i128};
 use super::transfer::{eval_operand, internval_of_const};
-
-// 按判别值类型语义，把 SwitchInt 分支值转换为域内 i128。
-fn switch_value_to_i128<'tcx>(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>, value: u128) -> Option<i128> {
-    let (bit_width, signed) = match ty.kind() {
-        TyKind::Int(int_ty) => (
-            int_ty
-                .bit_width()
-                .unwrap_or_else(|| tcx.data_layout.pointer_size.bits()),
-            true,
-        ),
-        TyKind::Uint(uint_ty) => (
-            uint_ty
-                .bit_width()
-                .unwrap_or_else(|| tcx.data_layout.pointer_size.bits()),
-            false,
-        ),
-        TyKind::Bool => (1, false),
-        TyKind::Char => (32, false),
-        _ => return None,
-    };
-    Some(if signed {
-        signed_bits_to_i128(value, bit_width)
-    } else {
-        unsigned_bits_to_i128(value, bit_width)
-    })
-}
-
-fn unsigned_bits_to_i128(bits: u128, bit_width: u64) -> i128 {
-    if bit_width == 128 {
-        if bits <= i128::MAX as u128 {
-            bits as i128
-        } else {
-            i128::MAX
-        }
-    } else {
-        let mask = (1u128 << bit_width) - 1;
-        (bits & mask) as i128
-    }
-}
-
-fn signed_bits_to_i128(bits: u128, bit_width: u64) -> i128 {
-    if bit_width == 128 {
-        return bits as i128;
-    }
-
-    let sign_bit = 1u128 << (bit_width - 1);
-    let mask = (1u128 << bit_width) - 1;
-    let x = bits & mask;
-
-    if (x & sign_bit) != 0 {
-        (x as i128) - ((1u128 << bit_width) as i128)
-    } else {
-        x as i128
-    }
-}
 
 // 将一个 place 与新区间求交，并传播到等价类中的 place。
 fn refine_place_with_interval<'tcx>(
@@ -73,7 +18,6 @@ fn refine_place_with_interval<'tcx>(
     }
     st.set_internval(place, refined);
 
-    // Propagate refinement to places known equal to `place` on this path.
     let all_places: Vec<Place<'tcx>> = st.internval.keys().copied().collect();
     for other in all_places {
         if other == place {

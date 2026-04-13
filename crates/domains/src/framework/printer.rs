@@ -1,5 +1,6 @@
 use crate::framework::forward::{
-    ForwardSemantics, PathForwardAnalysisConfig, run_path_sensitive_forward_analysis_with_config,
+    ForwardSemantics, PathForwardAnalysisConfig, PathForwardAnalysisResult,
+    run_path_sensitive_forward_analysis_with_config,
 };
 use core::cfg::Cfg;
 use rustc_hir::def_id::DefId;
@@ -94,7 +95,7 @@ pub fn run_and_print_path_sensitive_analysis<'tcx, A>(
     A: ForwardSemantics<'tcx>,
     A::State: StateEntries<'tcx>,
 {
-    let result = run_path_sensitive_forward_analysis_with_config(tcx, body, cfg, semantics, config);
+    let result = run_path_sensitive_analysis(tcx, body, cfg, semantics, config);
     print_function_header(tcx, def_id);
     let picked_bb_idx = pick_return_or_last_bb(body, result.states.len());
     if let Some(state) = result.states.get(picked_bb_idx) {
@@ -105,6 +106,52 @@ pub fn run_and_print_path_sensitive_analysis<'tcx, A>(
             .entries()
             .into_iter()
             .filter(|(place, _)| state.should_print_entry(*place))
+            .map(|(place, value)| (format_place_label(place, &local_names), value))
+            .collect();
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        let place_width = entries
+            .iter()
+            .map(|(place, _)| place.len())
+            .max()
+            .unwrap_or(0);
+        for (place, value) in entries {
+            println!("    {place:place_width$} => {value}");
+        }
+    }
+}
+
+pub fn run_path_sensitive_analysis<'tcx, A>(
+    tcx: TyCtxt<'tcx>,
+    body: &'tcx Body<'tcx>,
+    cfg: &Cfg,
+    semantics: &A,
+    config: PathForwardAnalysisConfig,
+) -> PathForwardAnalysisResult<A::State>
+where
+    A: ForwardSemantics<'tcx>,
+{
+    run_path_sensitive_forward_analysis_with_config(tcx, body, cfg, semantics, config)
+}
+
+pub fn print_all_bb_states<'tcx, S>(
+    body: &'tcx Body<'tcx>,
+    states: &[S],
+    mut print_entry: impl FnMut(Place<'tcx>, &S) -> Option<String>,
+) where
+    S: StateEntries<'tcx>,
+{
+    let local_names = collect_local_names(body);
+    println!("  locals: {:?}", body.var_debug_info);
+    for (bb, state) in body
+        .basic_blocks
+        .iter_enumerated()
+        .filter_map(|(bb, _)| states.get(bb.index()).map(|state| (bb, state)))
+    {
+        println!("  bb{}:", bb.index());
+        let mut entries: Vec<(String, String)> = state
+            .entries()
+            .into_iter()
+            .filter_map(|(place, _)| print_entry(place, state).map(|value| (place, value)))
             .map(|(place, value)| (format_place_label(place, &local_names), value))
             .collect();
         entries.sort_by(|a, b| a.0.cmp(&b.0));

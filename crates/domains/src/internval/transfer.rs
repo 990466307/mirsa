@@ -1,36 +1,9 @@
 use rustc_middle::mir::*;
+use rustc_middle::ty::adjustment::PointerCoercion;
 use rustc_middle::ty::{Ty, TyCtxt, TyKind};
 
 use super::abstract_value::*;
-use super::state::InternvalState;
-
-fn scalar_layout<'tcx>(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> Option<(u64, bool)> {
-    match ty.kind() {
-        TyKind::Int(int_ty) => Some((
-            int_ty
-                .bit_width()
-                .unwrap_or_else(|| tcx.data_layout.pointer_size.bits()),
-            true,
-        )),
-        TyKind::Uint(uint_ty) => Some((
-            uint_ty
-                .bit_width()
-                .unwrap_or_else(|| tcx.data_layout.pointer_size.bits()),
-            false,
-        )),
-        TyKind::Bool => Some((1, false)),
-        TyKind::Char => Some((32, false)),
-        _ => None,
-    }
-}
-
-fn bits_to_i128(bits: u128, bit_width: u64, signed: bool) -> i128 {
-    if signed {
-        signed_bits_to_i128(bits, bit_width)
-    } else {
-        unsigned_bits_to_i128(bits, bit_width)
-    }
-}
+use super::state::{InternvalState, bits_to_i128, scalar_layout};
 
 fn i128_to_bits(value: i128, bit_width: u64) -> u128 {
     if bit_width == 128 {
@@ -98,35 +71,6 @@ fn eval_cast_internval<'tcx>(
     Internval::top()
 }
 
-fn unsigned_bits_to_i128(bits: u128, bit_width: u64) -> i128 {
-    if bit_width == 128 {
-        if bits <= i128::MAX as u128 {
-            bits as i128
-        } else {
-            i128::MAX
-        }
-    } else {
-        let mask = (1u128 << bit_width) - 1;
-        (bits & mask) as i128
-    }
-}
-
-fn signed_bits_to_i128(bits: u128, bit_width: u64) -> i128 {
-    if bit_width == 128 {
-        return bits as i128;
-    }
-
-    let sign_bit = 1u128 << (bit_width - 1);
-    let mask = (1u128 << bit_width) - 1;
-    let x = bits & mask;
-
-    if (x & sign_bit) != 0 {
-        (x as i128) - ((1u128 << bit_width) as i128)
-    } else {
-        x as i128
-    }
-}
-
 // 将 MIR 常量操作数求值为区间值。
 pub(crate) fn internval_of_const<'tcx>(c: &ConstOperand<'tcx>) -> Internval {
     let ty = c.ty();
@@ -182,15 +126,6 @@ fn resolve_indexed_place<'tcx>(
                     TyKind::Array(_, len) => len.try_to_target_usize(tcx)? as u64,
                     _ => return None,
                 };
-                if !idx_iv.is_empty() {
-                    let max_idx = len.saturating_sub(1) as i128;
-                    if idx_iv.low < 0 || idx_iv.high > max_idx {
-                        println!(
-                            "Warning: potential array out-of-bounds access, index {:?}, valid range [0, {}]",
-                            idx_iv, max_idx
-                        );
-                    }
-                }
                 if idx_iv.is_empty() || idx_iv.low != idx_iv.high || idx_iv.low < 0 {
                     return None;
                 }
@@ -241,164 +176,6 @@ pub(crate) fn eval_operand<'tcx>(
     match op {
         Operand::Copy(p) | Operand::Move(p) => eval_place(tcx, local_decls, *p, st),
         Operand::Constant(c) => internval_of_const(c),
-    }
-}
-
-// 对单条 MIR 语句执行区间与等价关系的 transfer。
-pub fn transfer_stmt<'tcx>(
-    tcx: TyCtxt<'tcx>,
-    st: &mut InternvalState<'tcx>,
-    stmt: &Statement<'tcx>,
-    local_decls: &'tcx LocalDecls<'tcx>,
-) {
-    let kind = &stmt.kind;
-    match kind {
-        StatementKind::Assign(assign) => {
-            let (place, rvalue) = &**assign;
-            let resolved_place = resolve_indexed_place(tcx, local_decls, st, *place);
-            if resolved_place.is_none() {
-                let targets: Vec<Place<'tcx>> = st
-                    .internval
-                    .keys()
-                    .copied()
-                    .filter(|candidate| {
-                        if place.local != candidate.local {
-                            return false;
-                        }
-                        if place.projection.len() != candidate.projection.len() {
-                            return false;
-                        }
-                        place
-                            .projection
-                            .iter()
-                            .zip(candidate.projection.iter())
-                            .all(|(l, r)| match l {
-                                ProjectionElem::Index(_) => {
-                                    matches!(r, ProjectionElem::ConstantIndex { .. })
-                                }
-                                _ => l == r,
-                            })
-                    })
-                    .collect();
-                if targets.is_empty() {
-                    println!(
-                        "Warning: unresolved indexed lhs {:?}, but no concrete array elements found.",
-                        place
-                    );
-                    return;
-                }
-                for p in targets {
-                    st.set_internval(p, Internval::top());
-                    st.eq.kill(p);
-                }
-                return;
-            }
-            let dst_place = resolved_place.unwrap_or(*place);
-            // 关系型
-            match rvalue {
-                Rvalue::Use(op) => match op {
-                    Operand::Copy(src) | Operand::Move(src) => {
-                        st.eq.kill(dst_place);
-                        let resolved_src =
-                            resolve_indexed_place(tcx, local_decls, st, *src).unwrap_or(*src);
-                        st.eq.union(dst_place, resolved_src);
-                    }
-                    Operand::Constant(_) => {
-                        st.eq.kill(dst_place);
-                    }
-                },
-                _ => {
-                    st.eq.kill(dst_place);
-                }
-            }
-            match rvalue {
-                Rvalue::BinaryOp(op, ops) => match op {
-                    BinOp::AddWithOverflow | BinOp::SubWithOverflow | BinOp::MulWithOverflow => {
-                        eval_binary_op_with_overflow_internval(
-                            tcx,
-                            st,
-                            &dst_place,
-                            local_decls,
-                            op,
-                            ops,
-                        );
-                    }
-                    _ => {
-                        let rhs_internval = eval_binary_op_internval(tcx, st, local_decls, op, ops);
-                        st.set_internval(dst_place, rhs_internval);
-                    }
-                },
-
-                Rvalue::UnaryOp(op, arg) => {
-                    let rhs_internval = eval_unary_op_internval(tcx, st, local_decls, op, arg);
-                    st.set_internval(dst_place, rhs_internval);
-                }
-
-                Rvalue::Use(op) => {
-                    let rhs_internval = eval_operand(tcx, local_decls, op, st);
-                    st.set_internval(dst_place, rhs_internval);
-                }
-
-                Rvalue::Cast(_cast_kind, op, dst_ty) => {
-                    let rhs_internval = eval_cast_internval(tcx, st, local_decls, op, *dst_ty);
-                    st.set_internval(dst_place, rhs_internval);
-                }
-
-                Rvalue::Aggregate(kind, indexvec) => match kind.as_ref() {
-                    AggregateKind::Tuple => {
-                        for (i, op) in indexvec.iter().enumerate() {
-                            let elem_place = dst_place.project_deeper(
-                                &[ProjectionElem::Field(i.into(), op.ty(local_decls, tcx))],
-                                tcx,
-                            );
-                            let elem_internval = eval_operand(tcx, local_decls, op, st);
-                            st.set_internval(elem_place, elem_internval);
-                        }
-                    }
-                    AggregateKind::Array(_elem_ty) => {
-                        let len = indexvec.len() as u64;
-                        for (i, op) in indexvec.iter().enumerate() {
-                            let elem_place = dst_place.project_deeper(
-                                &[ProjectionElem::ConstantIndex {
-                                    offset: i as u64,
-                                    min_length: len,
-                                    from_end: false,
-                                }],
-                                tcx,
-                            );
-                            let elem_internval = eval_operand(tcx, local_decls, op, st);
-                            st.set_internval(elem_place, elem_internval);
-                        }
-                    }
-                    _ => {
-                        println!(
-                            "Not Support: unhandled Aggregate kind in internval analysis: {:?}",
-                            kind
-                        );
-                        st.set_internval(dst_place, Internval::top());
-                    }
-                },
-
-                Rvalue::Ref(_region, _borrow_kind, borrowed_place) => {
-                    let borrowed_internval = eval_place(tcx, local_decls, *borrowed_place, st);
-                    st.set_internval(dst_place, borrowed_internval);
-                }
-
-                _ => {
-                    println!(
-                        "Not Support: unhandled Rvalue in internval analysis: {:?}",
-                        rvalue
-                    );
-                    st.set_internval(dst_place, Internval::top());
-                }
-            }
-        }
-        _ => {
-            println!(
-                "Not Support: unhandled Statement in internval analysis: {:?}",
-                kind
-            );
-        }
     }
 }
 
@@ -461,13 +238,7 @@ fn eval_binary_op_internval<'tcx>(
         BinOp::Gt => gt(&sa, &sb),
         BinOp::Eq => eq(&sa, &sb),
         BinOp::Ne => neq(&sa, &sb),
-        _ => {
-            println!(
-                "Not Support: unhandled binary op in internval analysis: {:?}",
-                op
-            );
-            Internval::top()
-        }
+        _ => Internval::top(),
     }
 }
 
@@ -483,12 +254,217 @@ fn eval_unary_op_internval<'tcx>(
 
     match op {
         UnOp::Neg => neg(&sa),
-        _ => {
-            println!(
-                "Not Support: unhandled unary op in internval analysis: {:?}",
-                op
-            );
-            Internval::top()
+        _ => Internval::top(),
+    }
+}
+
+// 对单条 MIR 语句执行区间与等价关系的 transfer。
+pub fn transfer_stmt<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    st: &mut InternvalState<'tcx>,
+    stmt: &Statement<'tcx>,
+    local_decls: &'tcx LocalDecls<'tcx>,
+) {
+    let kind = &stmt.kind;
+    match kind {
+        StatementKind::Assign(assign) => {
+            let (place, rvalue) = &**assign;
+            let resolved_place = resolve_indexed_place(tcx, local_decls, st, *place);
+            if resolved_place.is_none() {
+                let targets: Vec<Place<'tcx>> = st
+                    .internval
+                    .keys()
+                    .copied()
+                    .filter(|candidate| {
+                        if place.local != candidate.local {
+                            return false;
+                        }
+                        if place.projection.len() != candidate.projection.len() {
+                            return false;
+                        }
+                        place
+                            .projection
+                            .iter()
+                            .zip(candidate.projection.iter())
+                            .all(|(l, r)| match l {
+                                ProjectionElem::Index(_) => {
+                                    matches!(r, ProjectionElem::ConstantIndex { .. })
+                                }
+                                _ => l == r,
+                            })
+                    })
+                    .collect();
+                if targets.is_empty() {
+                    println!(
+                        "Warning: unresolved indexed lhs {:?}, but no concrete array elements found.",
+                        place
+                    );
+                    return;
+                }
+                for p in targets {
+                    st.set_internval(p, Internval::top());
+                    st.clear_slice_meta(&p);
+                    st.eq.kill(p);
+                }
+                return;
+            }
+            let dst_place = resolved_place.unwrap_or(*place);
+            st.clear_slice_meta(&dst_place);
+            // 关系型
+            match rvalue {
+                Rvalue::Use(op) => match op {
+                    Operand::Copy(src) | Operand::Move(src) => {
+                        st.eq.kill(dst_place);
+                        let resolved_src =
+                            resolve_indexed_place(tcx, local_decls, st, *src).unwrap_or(*src);
+                        st.eq.union(dst_place, resolved_src);
+                    }
+                    Operand::Constant(_) => {
+                        st.eq.kill(dst_place);
+                    }
+                },
+                _ => {
+                    st.eq.kill(dst_place);
+                }
+            }
+            match rvalue {
+                Rvalue::BinaryOp(op, ops) => match op {
+                    BinOp::AddWithOverflow | BinOp::SubWithOverflow | BinOp::MulWithOverflow => {
+                        eval_binary_op_with_overflow_internval(
+                            tcx,
+                            st,
+                            &dst_place,
+                            local_decls,
+                            op,
+                            ops,
+                        );
+                    }
+                    _ => {
+                        let rhs_internval = eval_binary_op_internval(tcx, st, local_decls, op, ops);
+                        st.set_internval(dst_place, rhs_internval);
+                    }
+                },
+
+                Rvalue::UnaryOp(UnOp::PtrMetadata, op) => {
+                    let len_iv = match op {
+                        Operand::Copy(src) | Operand::Move(src) => {
+                            st.get_slice_meta(src).unwrap_or_else(Internval::top)
+                        }
+                        Operand::Constant(_) => Internval::top(),
+                    };
+                    st.set_internval(dst_place, len_iv);
+                }
+
+                Rvalue::UnaryOp(op, arg) => {
+                    let rhs_internval = eval_unary_op_internval(tcx, st, local_decls, op, arg);
+                    st.set_internval(dst_place, rhs_internval);
+                }
+
+                Rvalue::Use(op) => {
+                    let rhs_internval = eval_operand(tcx, local_decls, op, st);
+                    st.set_internval(dst_place, rhs_internval);
+                }
+
+                Rvalue::Cast(cast_kind, op, dst_ty) => {
+                    let rhs_internval = eval_cast_internval(tcx, st, local_decls, op, *dst_ty);
+                    st.set_internval(dst_place, rhs_internval);
+                    if matches!(cast_kind, CastKind::PointerCoercion(PointerCoercion::Unsize, _))
+                    {
+                        if let Operand::Copy(src) | Operand::Move(src) = op {
+                            let src_ty = src.ty(local_decls, tcx).ty;
+                            if let TyKind::Ref(_, inner, _) = src_ty.kind() {
+                                if let TyKind::Array(_, len) = inner.kind() {
+                                    if let Some(len) = len.try_to_target_usize(tcx) {
+                                        st.set_slice_meta(
+                                            dst_place,
+                                            Internval::new(len as i128, len as i128),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Rvalue::Len(src) => {
+                    let src_ty = src.ty(local_decls, tcx).ty;
+                    let len_iv = match src_ty.kind() {
+                        TyKind::Array(_, len) => len
+                            .try_to_target_usize(tcx)
+                            .map(|len| Internval::new(len as i128, len as i128))
+                            .unwrap_or_else(Internval::top),
+                        TyKind::Slice(_) => st.get_slice_meta(src).unwrap_or_else(Internval::top),
+                        TyKind::Ref(_, inner, _) => match inner.kind() {
+                            TyKind::Array(_, len) => len
+                                .try_to_target_usize(tcx)
+                                .map(|len| Internval::new(len as i128, len as i128))
+                                .unwrap_or_else(Internval::top),
+                            TyKind::Slice(_) => {
+                                st.get_slice_meta(src).unwrap_or_else(Internval::top)
+                            }
+                            _ => Internval::top(),
+                        },
+                        _ => Internval::top(),
+                    };
+                    st.set_internval(dst_place, len_iv);
+                }
+
+                Rvalue::Aggregate(kind, indexvec) => match kind.as_ref() {
+                    AggregateKind::Tuple => {
+                        for (i, op) in indexvec.iter().enumerate() {
+                            let elem_place = dst_place.project_deeper(
+                                &[ProjectionElem::Field(i.into(), op.ty(local_decls, tcx))],
+                                tcx,
+                            );
+                            let elem_internval = eval_operand(tcx, local_decls, op, st);
+                            st.set_internval(elem_place, elem_internval);
+                            st.clear_slice_meta(&elem_place);
+                        }
+                    }
+                    AggregateKind::Array(_elem_ty) => {
+                        let len = indexvec.len() as u64;
+                        for (i, op) in indexvec.iter().enumerate() {
+                            let elem_place = dst_place.project_deeper(
+                                &[ProjectionElem::ConstantIndex {
+                                    offset: i as u64,
+                                    min_length: len,
+                                    from_end: false,
+                                }],
+                                tcx,
+                            );
+                            let elem_internval = eval_operand(tcx, local_decls, op, st);
+                            st.set_internval(elem_place, elem_internval);
+                            st.clear_slice_meta(&elem_place);
+                        }
+                    }
+                    _ => st.set_internval(dst_place, Internval::top()),
+                },
+
+                Rvalue::Ref(_region, _borrow_kind, borrowed_place) => {
+                    let borrowed_internval = eval_place(tcx, local_decls, *borrowed_place, st);
+                    st.set_internval(dst_place, borrowed_internval);
+                    let borrowed_ty = borrowed_place.ty(local_decls, tcx).ty;
+                    match borrowed_ty.kind() {
+                        TyKind::Array(_, len) => {
+                            if let Some(len) = len.try_to_target_usize(tcx) {
+                                st.set_slice_meta(
+                                    dst_place,
+                                    Internval::new(len as i128, len as i128),
+                                );
+                            }
+                        }
+                        TyKind::Slice(_) => {
+                            if let Some(len) = st.get_slice_meta(borrowed_place) {
+                                st.set_slice_meta(dst_place, len);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+
+                _ => st.set_internval(dst_place, Internval::top()),
+            }
         }
+        _ => {}
     }
 }

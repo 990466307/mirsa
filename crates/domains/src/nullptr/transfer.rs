@@ -1,30 +1,10 @@
 use rustc_middle::mir::*;
 use rustc_middle::ty::{Ty, TyCtxt, TyKind};
 
-use super::abstract_value::NullPtr;
-use super::state::NullPtrState;
-
-fn is_ptr_like(ty: Ty<'_>) -> bool {
-    matches!(ty.kind(), TyKind::RawPtr(_, _) | TyKind::FnPtr(..))
-}
-
-fn is_ref_like(ty: Ty<'_>) -> bool {
-    matches!(ty.kind(), TyKind::Ref(_, _, _))
-}
-
-fn is_tracked(ty: Ty<'_>) -> bool {
-    is_ptr_like(ty) || is_ref_like(ty)
-}
-
-fn get_tracked_value<'tcx>(st: &NullPtrState<'tcx>, place: Place<'tcx>, ty: Ty<'tcx>) -> NullPtr {
-    if is_ref_like(ty) {
-        st.get_ref(&place)
-    } else if is_ptr_like(ty) {
-        st.get_nullptr(&place)
-    } else {
-        NullPtr::Bot
-    }
-}
+use super::abstract_value::{NullPtr, join};
+use super::state::{
+    NullPtrState, get_tracked_value, is_ptr_like, is_ref_like, is_tracked, set_tracked_value,
+};
 
 fn strip_last_deref<'tcx>(tcx: TyCtxt<'tcx>, place: Place<'tcx>) -> Option<Place<'tcx>> {
     if !matches!(place.projection.last(), Some(ProjectionElem::Deref)) {
@@ -53,21 +33,16 @@ fn base_of_first_deref<'tcx>(tcx: TyCtxt<'tcx>, place: Place<'tcx>) -> Option<Pl
     None
 }
 
-fn set_tracked_value<'tcx>(
-    st: &mut NullPtrState<'tcx>,
-    place: Place<'tcx>,
-    ty: Ty<'tcx>,
-    value: NullPtr,
-) {
-    if is_ref_like(ty) {
-        st.set_ref(place, value);
-    } else if is_ptr_like(ty) {
-        st.set_nullptr(place, value);
-    }
-}
-
 fn is_null_ctor_path(path: &str) -> bool {
     (path.ends_with("::null") || path.ends_with("::null_mut")) && path.contains("::ptr::")
+}
+
+fn unknown_value_for_type(ty: Ty<'_>) -> NullPtr {
+    match ty.kind() {
+        TyKind::RawPtr(_, _) => NullPtr::MaybeNull,
+        TyKind::Ref(_, _, _) | TyKind::FnPtr(..) => NullPtr::NonNull,
+        _ => NullPtr::Bot,
+    }
 }
 
 fn bits_to_i128(bits: u128, bit_width: u64, signed: bool) -> i128 {
@@ -142,6 +117,89 @@ pub(crate) fn nullptr_of_const<'tcx>(
     }
 }
 
+fn has_runtime_index<'tcx>(place: Place<'tcx>) -> bool {
+    place
+        .projection
+        .iter()
+        .any(|elem| matches!(elem, ProjectionElem::Index(_)))
+}
+
+fn candidate_places<'tcx>(
+    st: &NullPtrState<'tcx>,
+    place: Place<'tcx>,
+    ty: Ty<'tcx>,
+) -> Vec<Place<'tcx>> {
+    let keys: Vec<Place<'tcx>> = if is_ref_like(ty) {
+        st.refs.keys().copied().collect()
+    } else if is_ptr_like(ty) {
+        st.pointers.keys().copied().collect()
+    } else {
+        Vec::new()
+    };
+
+    keys.into_iter()
+        .filter(|candidate| {
+            if place.local != candidate.local {
+                return false;
+            }
+            if place.projection.len() != candidate.projection.len() {
+                return false;
+            }
+            place
+                .projection
+                .iter()
+                .zip(candidate.projection.iter())
+                .all(|(left, right)| match left {
+                    ProjectionElem::Index(_) => {
+                        matches!(right, ProjectionElem::ConstantIndex { .. })
+                    }
+                    _ => left == right,
+                })
+        })
+        .collect()
+}
+
+fn get_place_value<'tcx>(
+    st: &NullPtrState<'tcx>,
+    place: Place<'tcx>,
+    ty: Ty<'tcx>,
+) -> NullPtr {
+    if !has_runtime_index(place) {
+        return get_tracked_value(st, place, ty);
+    }
+
+    let candidates = candidate_places(st, place, ty);
+    if candidates.is_empty() {
+        return unknown_value_for_type(ty);
+    }
+
+    candidates
+        .into_iter()
+        .fold(NullPtr::Bot, |acc, candidate| join(acc, get_tracked_value(st, candidate, ty)))
+}
+
+fn weak_set_place_value<'tcx>(
+    st: &mut NullPtrState<'tcx>,
+    place: Place<'tcx>,
+    ty: Ty<'tcx>,
+    value: NullPtr,
+) {
+    if !has_runtime_index(place) {
+        set_tracked_value(st, place, ty, value);
+        return;
+    }
+
+    let candidates = candidate_places(st, place, ty);
+    if candidates.is_empty() {
+        return;
+    }
+
+    for candidate in candidates {
+        let current = get_tracked_value(st, candidate, ty);
+        set_tracked_value(st, candidate, ty, join(current, value));
+    }
+}
+
 pub(crate) fn eval_operand<'tcx>(
     tcx: TyCtxt<'tcx>,
     local_decls: &'tcx LocalDecls<'tcx>,
@@ -151,7 +209,6 @@ pub(crate) fn eval_operand<'tcx>(
 ) -> NullPtr {
     match op {
         Operand::Copy(p) | Operand::Move(p) => {
-            // Rule: a = *b  ==> points[a] = refs[b]
             if let Some(base) = strip_last_deref(tcx, *p) {
                 if st.refs.contains_key(&base) {
                     return st.get_ref(&base);
@@ -159,7 +216,7 @@ pub(crate) fn eval_operand<'tcx>(
             }
 
             let src_ty = p.ty(local_decls, tcx).ty;
-            get_tracked_value(st, *p, src_ty)
+            get_place_value(st, *p, src_ty)
         }
         Operand::Constant(c) => nullptr_of_const(tcx, c, dst_ty),
     }
@@ -188,7 +245,7 @@ fn eval_cast_nullptr<'tcx>(
                 NullPtr::NonNull
             }
         }
-        _ => NullPtr::NonNull,
+        _ => unknown_value_for_type(dst_ty),
     }
 }
 
@@ -209,7 +266,7 @@ fn call_return_value<'tcx>(
         }
     }
 
-    NullPtr::NonNull
+    unknown_value_for_type(dst_ty)
 }
 
 pub fn transfer_stmt<'tcx>(
@@ -218,50 +275,80 @@ pub fn transfer_stmt<'tcx>(
     stmt: &Statement<'tcx>,
     local_decls: &'tcx LocalDecls<'tcx>,
 ) {
-    let kind = &stmt.kind;
-    match kind {
-        StatementKind::Assign(assign) => {
-            let (place, rvalue) = &**assign;
-            let dst_ty = place.ty(local_decls, tcx).ty;
-            if !is_tracked(dst_ty) {
+    let StatementKind::Assign(assign) = &stmt.kind else {
+        return;
+    };
+    let (place, rvalue) = &**assign;
+    let dst_ty = place.ty(local_decls, tcx).ty;
+
+    match rvalue {
+        Rvalue::Aggregate(kind, operands) => match kind.as_ref() {
+            AggregateKind::Tuple => {
+                for (i, op) in operands.iter().enumerate() {
+                    let field_ty = op.ty(local_decls, tcx);
+                    if !is_tracked(field_ty) {
+                        continue;
+                    }
+                    let field_place = place.project_deeper(
+                        &[ProjectionElem::Field(i.into(), field_ty)],
+                        tcx,
+                    );
+                    let value = eval_operand(tcx, local_decls, op, st, field_ty);
+                    set_tracked_value(st, field_place, field_ty, value);
+                }
                 return;
             }
-            let dst_place = *place;
-
-            let value = match rvalue {
-                Rvalue::Use(op) => eval_operand(tcx, local_decls, op, st, dst_ty),
-                // Rule: a = &_b  ==> refs[a] = points[b]
-                Rvalue::Ref(_, _, borrowed_place) => st.get_nullptr(borrowed_place),
-                Rvalue::RawPtr(_, borrowed_place) => {
-                    if let Some(base) = base_of_first_deref(tcx, *borrowed_place) {
-                        let base_ty = base.ty(local_decls, tcx).ty;
-                        if is_ptr_like(base_ty) {
-                            st.get_nullptr(&base)
-                        } else {
-                            NullPtr::NonNull
-                        }
-                    } else {
-                        NullPtr::NonNull
-                    }
+            AggregateKind::Array(elem_ty) => {
+                if !is_tracked(*elem_ty) {
+                    return;
                 }
-                Rvalue::CopyForDeref(p) => {
-                    let src_ty = p.ty(local_decls, tcx).ty;
-                    get_tracked_value(st, *p, src_ty)
-                }
-                Rvalue::Cast(_, op, cast_ty) => eval_cast_nullptr(tcx, st, local_decls, op, *cast_ty),
-                _ => {
-                    println!(
-                        "Not Support: unhandled tracked rvalue in nullptr analysis: {:?}",
-                        rvalue
+                let len = operands.len() as u64;
+                for (i, op) in operands.iter().enumerate() {
+                    let elem_place = place.project_deeper(
+                        &[ProjectionElem::ConstantIndex {
+                            offset: i as u64,
+                            min_length: len,
+                            from_end: false,
+                        }],
+                        tcx,
                     );
-                    NullPtr::MaybeNull
+                    let value = eval_operand(tcx, local_decls, op, st, *elem_ty);
+                    set_tracked_value(st, elem_place, *elem_ty, value);
                 }
-            };
-            // println!("{:?} = {:?}", dst_place, value);
-            set_tracked_value(st, dst_place, dst_ty, value);
-        }
+                return;
+            }
+            _ => {}
+        },
         _ => {}
     }
+
+    if !is_tracked(dst_ty) {
+        return;
+    }
+
+    let value = match rvalue {
+        Rvalue::Use(op) => eval_operand(tcx, local_decls, op, st, dst_ty),
+        Rvalue::Ref(_, _, borrowed_place) => get_place_value(st, *borrowed_place, borrowed_place.ty(local_decls, tcx).ty),
+        Rvalue::RawPtr(_, borrowed_place) => {
+            if let Some(base) = base_of_first_deref(tcx, *borrowed_place) {
+                let base_ty = base.ty(local_decls, tcx).ty;
+                if is_ptr_like(base_ty) {
+                    get_place_value(st, base, base_ty)
+                } else {
+                    NullPtr::NonNull
+                }
+            } else {
+                NullPtr::NonNull
+            }
+        }
+        Rvalue::CopyForDeref(p) => {
+            let src_ty = p.ty(local_decls, tcx).ty;
+            get_place_value(st, *p, src_ty)
+        }
+        Rvalue::Cast(_, op, cast_ty) => eval_cast_nullptr(tcx, st, local_decls, op, *cast_ty),
+        _ => unknown_value_for_type(dst_ty),
+    };
+    weak_set_place_value(st, *place, dst_ty, value);
 }
 
 pub fn transfer_terminator<'tcx>(

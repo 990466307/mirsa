@@ -2,6 +2,7 @@ use crate::framework::forward::DomainState;
 use crate::framework::printer::StateEntries;
 use crate::internval::eq_domain::join_eq;
 use rustc_middle::mir::Place;
+use rustc_middle::ty::{Ty, TyCtxt, TyKind};
 use std::collections::HashMap;
 use std::fmt;
 
@@ -11,6 +12,7 @@ use super::eq_domain::EqDomain;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InternvalState<'tcx> {
     pub internval: HashMap<Place<'tcx>, Internval>,
+    pub slice_meta: HashMap<Place<'tcx>, Internval>,
     pub eq: EqDomain<'tcx>,
 }
 
@@ -18,9 +20,11 @@ impl<'tcx> InternvalState<'tcx> {
     fn default() -> Self {
         InternvalState {
             internval: HashMap::new(),
+            slice_meta: HashMap::new(),
             eq: EqDomain::new(),
         }
     }
+
     pub fn new_bot_state(places: &[Place<'tcx>], arg_count: usize) -> Self {
         let mut internval = HashMap::new();
         let mut eq = EqDomain::new();
@@ -36,8 +40,78 @@ impl<'tcx> InternvalState<'tcx> {
             eq.kill(*place);
         }
 
-        InternvalState { internval, eq }
+        InternvalState {
+            internval,
+            slice_meta: HashMap::new(),
+            eq,
+        }
     }
+}
+
+pub(crate) fn scalar_layout<'tcx>(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> Option<(u64, bool)> {
+    match ty.kind() {
+        TyKind::Int(int_ty) => Some((
+            int_ty
+                .bit_width()
+                .unwrap_or_else(|| tcx.data_layout.pointer_size.bits()),
+            true,
+        )),
+        TyKind::Uint(uint_ty) => Some((
+            uint_ty
+                .bit_width()
+                .unwrap_or_else(|| tcx.data_layout.pointer_size.bits()),
+            false,
+        )),
+        TyKind::Bool => Some((1, false)),
+        TyKind::Char => Some((32, false)),
+        _ => None,
+    }
+}
+
+pub(crate) fn unsigned_bits_to_i128(bits: u128, bit_width: u64) -> i128 {
+    if bit_width == 128 {
+        if bits <= i128::MAX as u128 {
+            bits as i128
+        } else {
+            i128::MAX
+        }
+    } else {
+        let mask = (1u128 << bit_width) - 1;
+        (bits & mask) as i128
+    }
+}
+
+pub(crate) fn signed_bits_to_i128(bits: u128, bit_width: u64) -> i128 {
+    if bit_width == 128 {
+        return bits as i128;
+    }
+
+    let sign_bit = 1u128 << (bit_width - 1);
+    let mask = (1u128 << bit_width) - 1;
+    let x = bits & mask;
+
+    if (x & sign_bit) != 0 {
+        (x as i128) - ((1u128 << bit_width) as i128)
+    } else {
+        x as i128
+    }
+}
+
+pub(crate) fn bits_to_i128(bits: u128, bit_width: u64, signed: bool) -> i128 {
+    if signed {
+        signed_bits_to_i128(bits, bit_width)
+    } else {
+        unsigned_bits_to_i128(bits, bit_width)
+    }
+}
+
+pub(crate) fn switch_value_to_i128<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    ty: Ty<'tcx>,
+    value: u128,
+) -> Option<i128> {
+    let (bit_width, signed) = scalar_layout(tcx, ty)?;
+    Some(bits_to_i128(value, bit_width, signed))
 }
 
 impl<'tcx> DomainState<'tcx> for InternvalState<'tcx> {
@@ -50,7 +124,7 @@ impl<'tcx> DomainState<'tcx> for InternvalState<'tcx> {
     }
 
     fn state_changed(previous: &Self, next: &Self) -> bool {
-        previous.internval != next.internval
+        previous.internval != next.internval || previous.slice_meta != next.slice_meta
     }
 }
 
@@ -80,6 +154,12 @@ impl<'tcx> StateEntries<'tcx> for InternvalState<'tcx> {
             .map(|(place, interval)| (*place, interval.to_string()))
             .collect()
     }
+
+    fn should_print_entry(&self, place: Place<'tcx>) -> bool {
+        self.internval
+            .get(&place)
+            .is_some_and(|interval| !interval.is_empty())
+    }
 }
 
 impl<'tcx> InternvalState<'tcx> {
@@ -88,6 +168,18 @@ impl<'tcx> InternvalState<'tcx> {
     }
     pub fn set_internval(&mut self, place: Place<'tcx>, internval: Internval) {
         self.internval.insert(place, internval);
+    }
+
+    pub fn get_slice_meta(&self, place: &Place<'tcx>) -> Option<Internval> {
+        self.slice_meta.get(place).copied()
+    }
+
+    pub fn set_slice_meta(&mut self, place: Place<'tcx>, internval: Internval) {
+        self.slice_meta.insert(place, internval);
+    }
+
+    pub fn clear_slice_meta(&mut self, place: &Place<'tcx>) {
+        self.slice_meta.remove(place);
     }
 }
 
@@ -100,6 +192,11 @@ pub fn join_state<'tcx>(
         let ia = a.internval.get(k).copied().unwrap();
         let ib = b.internval.get(k).copied().unwrap();
         out.internval.insert(*k, join(&ia, &ib));
+    }
+    for k in a.slice_meta.keys().chain(b.slice_meta.keys()) {
+        let ia = a.slice_meta.get(k).copied().unwrap_or_else(Internval::empty);
+        let ib = b.slice_meta.get(k).copied().unwrap_or_else(Internval::empty);
+        out.slice_meta.insert(*k, join(&ia, &ib));
     }
     out.eq = join_eq(&a.eq, &b.eq);
     out
@@ -116,7 +213,11 @@ pub fn widen_state<'tcx>(
         let widened = widen(&ia, &ib);
         out.internval.insert(*k, widened);
     }
+    for k in a.slice_meta.keys().chain(b.slice_meta.keys()) {
+        let ia = a.slice_meta.get(k).copied().unwrap_or_else(Internval::empty);
+        let ib = b.slice_meta.get(k).copied().unwrap_or_else(Internval::empty);
+        out.slice_meta.insert(*k, widen(&ia, &ib));
+    }
     out.eq = join_eq(&a.eq, &b.eq);
-    // println!("{:?}\n and {:?}\n widen to {:?}\n", &a, &b, &out);
     out
 }

@@ -19,8 +19,8 @@ struct SignSemantics<'a, 'tcx> {
 impl<'a, 'tcx> ForwardSemantics<'tcx> for SignSemantics<'a, 'tcx> {
     type State = SignState<'tcx>;
 
-    fn bottom(&self, _body: &'tcx Body<'tcx>) -> Self::State {
-        SignState::new_bot_state(self.places)
+    fn bottom(&self, body: &'tcx Body<'tcx>) -> Self::State {
+        SignState::new_bot_state(self.places, body.arg_count)
     }
 
     fn transfer_stmt(
