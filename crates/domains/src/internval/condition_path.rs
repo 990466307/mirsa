@@ -39,7 +39,7 @@ fn refine_place_with_interval<'tcx>(
 
 // 在同一基本块内查找目标 place 最近一次比较赋值。
 fn find_last_cmp_assign<'tcx>(
-    body: &'tcx Body<'tcx>,
+    body: &Body<'tcx>,
     bb: BasicBlock,
     target: Place<'tcx>,
 ) -> Option<(BinOp, Operand<'tcx>, Operand<'tcx>)> {
@@ -68,10 +68,64 @@ fn find_last_cmp_assign<'tcx>(
     None
 }
 
+fn is_slice_is_empty_path(path: &str) -> bool {
+    path.ends_with("::is_empty")
+}
+
+enum BoolDef<'tcx> {
+    Cmp(BinOp, Operand<'tcx>, Operand<'tcx>),
+    IsEmpty(Operand<'tcx>),
+}
+
+fn find_bool_def<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    body: &Body<'tcx>,
+    bb: BasicBlock,
+    target: Place<'tcx>,
+) -> Option<BoolDef<'tcx>> {
+    if let Some((op, left, right)) = find_last_cmp_assign(body, bb, target) {
+        return Some(BoolDef::Cmp(op, left, right));
+    }
+
+    let mut matches = body
+        .basic_blocks
+        .iter_enumerated()
+        .filter_map(|(_, bbdata)| {
+            let term = bbdata.terminator.as_ref()?;
+            let TerminatorKind::Call {
+                func,
+                args,
+                destination,
+                target: Some(call_target),
+                ..
+            } = &term.kind
+            else {
+                return None;
+            };
+            if *call_target != bb || *destination != target {
+                return None;
+            }
+            let TyKind::FnDef(def_id, _) = func.ty(&body.local_decls, tcx).kind() else {
+                return None;
+            };
+            let path = tcx.def_path_str(*def_id);
+            if !is_slice_is_empty_path(&path) {
+                return None;
+            }
+            Some(BoolDef::IsEmpty(args.first()?.node.clone()))
+        });
+
+    let first = matches.next()?;
+    if matches.next().is_some() {
+        return None;
+    }
+    Some(first)
+}
+
 // 根据边上的比较真值细化参与比较的操作数区间。
 fn refine_cmp<'tcx>(
     tcx: TyCtxt<'tcx>,
-    local_decls: &'tcx LocalDecls<'tcx>,
+    local_decls: &LocalDecls<'tcx>,
     st: &mut InternvalState<'tcx>,
     op: BinOp,
     truth: bool,
@@ -192,10 +246,32 @@ fn refine_cmp<'tcx>(
     Some(())
 }
 
+fn refine_is_empty<'tcx>(
+    st: &mut InternvalState<'tcx>,
+    truth: bool,
+    receiver: &Operand<'tcx>,
+) -> Option<()> {
+    let (Operand::Copy(place) | Operand::Move(place)) = receiver else {
+        return Some(());
+    };
+    let current = st.get_slice_meta(place).unwrap_or_else(Internval::top);
+    let wanted = if truth {
+        Internval::new(0, 0)
+    } else {
+        Internval::new(1, i128::MAX)
+    };
+    let refined = intersect(&current, &wanted);
+    if refined.is_empty() {
+        return None;
+    }
+    st.set_slice_meta(*place, refined);
+    Some(())
+}
+
 // 利用分支条件（Goto/SwitchInt）对边状态做细化。
 pub fn refine_edge<'tcx>(
     tcx: TyCtxt<'tcx>,
-    body: &'tcx Body<'tcx>,
+    body: &Body<'tcx>,
     pred: BasicBlock,
     succ: BasicBlock,
     in_state: &InternvalState<'tcx>,
@@ -242,7 +318,12 @@ pub fn refine_edge<'tcx>(
                         }
                     }
 
-                    if !values_i128.is_empty() && values_i128.len() == 1 {
+                    let discr_is_bool = matches!(discr_ty.kind(), TyKind::Bool);
+
+                    if !values_i128.is_empty()
+                        && values_i128.len() == 1
+                        && !(discr_is_bool && current.is_empty())
+                    {
                         let v = values_i128[0];
                         if !refine_place_with_interval(&mut st, *place, Internval::new(v, v)) {
                             return None;
@@ -254,7 +335,7 @@ pub fn refine_edge<'tcx>(
                         }
                     }
 
-                    if let TyKind::Bool = discr_ty.kind() {
+                    if discr_is_bool {
                         let mut branch_truth: Option<bool> = None;
                         if values_for_succ.len() == 1 {
                             branch_truth = match values_for_succ[0] {
@@ -275,21 +356,28 @@ pub fn refine_edge<'tcx>(
                         }
 
                         if let Some(truth) = branch_truth {
-                            if let Some((op, left, right)) =
-                                find_last_cmp_assign(body, pred, *place)
-                            {
-                                if refine_cmp(
-                                    tcx,
-                                    &body.local_decls,
-                                    &mut st,
-                                    op,
-                                    truth,
-                                    &left,
-                                    &right,
-                                )
-                                .is_none()
-                                {
-                                    return None;
+                            if let Some(def) = find_bool_def(tcx, body, pred, *place) {
+                                match def {
+                                    BoolDef::Cmp(op, left, right) => {
+                                        if refine_cmp(
+                                            tcx,
+                                            &body.local_decls,
+                                            &mut st,
+                                            op,
+                                            truth,
+                                            &left,
+                                            &right,
+                                        )
+                                        .is_none()
+                                        {
+                                            return None;
+                                        }
+                                    }
+                                    BoolDef::IsEmpty(receiver) => {
+                                        if refine_is_empty(&mut st, truth, &receiver).is_none() {
+                                            return None;
+                                        }
+                                    }
                                 }
                             }
                         }

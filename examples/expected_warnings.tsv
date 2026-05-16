@@ -1,0 +1,46 @@
+# Expected MIRSA warning codes for example tests.
+# Format: <example-path>\t<comma-separated warning codes>
+# Use '-' when the example is expected to compile and run without a current warning.
+examples/safe4u_final_numeric/01_time_from_ordinal_date_unchecked.rs	internval/definite-zero
+examples/safe4u_final_numeric/02_regex_next_state_untagged_unchecked.rs	internval/definite-oob
+examples/safe4u_final_numeric/03_lexical_rev_get_unchecked.rs	internval/definite-oob
+examples/safe4u_final_numeric/04_lexical_digit_to_char.rs	internval/definite-oob
+examples/safe4u_final_numeric/05_tormol_utf16_from_slice_start_unchecked.rs	internval/definite-oob
+examples/safe4u_final_numeric/06_bitvec_split_at_unchecked.rs	internval/definite-oob
+examples/safe4u_final_numeric/07_bitvec_split_at_unchecked_mut.rs	internval/definite-oob
+examples/safe4u_final_numeric/08_bitvec_replace_unchecked.rs	internval/definite-oob
+examples/safe4u_final_numeric/09_fixedbitset_copy_bit.rs	internval/definite-oob
+examples/safe4u_final_numeric/10_bitvec_set_unchecked.rs	internval/definite-oob
+examples/safe4u_final_numeric/11_bitvec_copy_within_unchecked.rs	internval/definite-oob
+examples/safe4u_final_numeric/12_latin1_byte_compatible_up_to.rs	internval/definite-oob
+examples/safe4u_final_numeric/13_lexical_push_unchecked.rs	internval/definite-oob
+examples/safe4u_final_numeric/14_lexical_extend_unchecked.rs	internval/definite-oob
+examples/safe4u_final_numeric/15_tokio_get_unchecked.rs	internval/definite-oob
+examples/safe4u_final_numeric/16_tokio_get_unchecked_mut.rs	internval/definite-oob
+examples/safe4u_final_numeric/17_tormol_utf8_from_slice_start_unchecked.rs	internval/definite-oob
+examples/safe4u_final_numeric/18_lexical_copy_to_dst.rs	internval/definite-oob
+examples/safe4u_final_numeric/19_encoding_load16_unaligned.rs	internval/definite-oob
+examples/safe4u_final_numeric/20_encoding_store16_unaligned.rs	internval/definite-oob
+examples/safe4u_final_numeric/21_bitvec_get_unchecked.rs	internval/definite-oob
+examples/safe4u_final_numeric/22_bitvec_get_unchecked_mut.rs	internval/definite-oob
+examples/safe4u_final_pointer/01_smallvec_from_raw_parts_nonnull.rs	nullptr/definite-null
+examples/safe4u_final_pointer/02_nix_mremap_nonnull.rs	nullptr/definite-null
+examples/safe4u_final_pointer/03_magick_get_image_artifacts_cstr_from_ptr.rs	nullptr/definite-null
+examples/safe4u_final_pointer/04_magick_write_images_blob_copy_nonoverlapping.rs	nullptr/definite-null
+examples/safe4u_final_pointer/05_simple_slab_remove.rs	nullptr/definite-null,nullptr/definite-null,nullptr/definite-null
+examples/safe4u_final_pointer/06_flatbuffers_read_scalar.rs	nullptr/definite-null
+examples/safe4u_final_pointer/07_flatbuffers_emplace_scalar.rs	nullptr/definite-null
+examples/safe4u_final_pointer/08_sized_chunks_from.rs	nullptr/definite-null
+examples/safe4u_final_pointer/09_magick_get_image_artifact_cstr_from_ptr.rs	nullptr/definite-null
+examples/safe4u_final_pointer/10_magick_get_image_property_cstr_from_ptr.rs	nullptr/definite-null
+examples/safe4u_final_pointer/11_magick_get_image_properties_cstr_from_ptr.rs	nullptr/definite-null
+examples/safe4u_final_pointer/12_magick_write_image_blob_copy_nonoverlapping.rs	nullptr/definite-null
+examples/safe4u_final_pointer/13_rustix_epoll_vec_from_raw_parts.rs	nullptr/definite-null
+examples/safe4u_final_pointer/14_isahc_buffer_vec_from_raw_parts.rs	nullptr/definite-null
+examples/safe4u_final_pointer/15_chemfiles_from_c_cstr_from_ptr.rs	nullptr/definite-null
+examples/safe4u_final_pointer/16_kclvm_c2str_cstr_from_ptr.rs	nullptr/definite-null
+examples/safe4u_final_pointer/17_nix_mmap_nonnull.rs	nullptr/definite-null
+examples/safe4u_final_pointer/18_nix_mmap_anonymous_nonnull.rs	nullptr/definite-null
+examples/safe4u_final_pointer/19_funty_new_unchecked.rs	nullptr/definite-null
+examples/safe4u_final_pointer/20_funty_make_slice.rs	nullptr/definite-null
+examples/safe4u_final_pointer/21_bumpalo_from_raw_parts_in.rs	nullptr/definite-null

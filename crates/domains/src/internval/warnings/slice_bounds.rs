@@ -14,7 +14,7 @@ pub(crate) fn matches_path(path: &str) -> bool {
 
 pub(crate) fn emit<'tcx>(
     tcx: TyCtxt<'tcx>,
-    body: &'tcx Body<'tcx>,
+    body: &Body<'tcx>,
     term: &Terminator<'tcx>,
     state: &InternvalState<'tcx>,
     path: &str,
@@ -40,11 +40,7 @@ pub(crate) fn emit<'tcx>(
         return;
     }
 
-    let code = match level {
-        CheckLevel::Definite => "internval/definite-oob",
-        CheckLevel::Possible => "internval/possible-oob",
-        CheckLevel::Safe => unreachable!(),
-    };
+    let code = level.oob_code();
     let api = if path.ends_with("::get_unchecked_mut") {
         "slice::get_unchecked_mut"
     } else if path.ends_with("::get_unchecked") {

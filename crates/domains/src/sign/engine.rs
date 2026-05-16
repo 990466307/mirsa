@@ -19,7 +19,7 @@ struct SignSemantics<'a, 'tcx> {
 impl<'a, 'tcx> ForwardSemantics<'tcx> for SignSemantics<'a, 'tcx> {
     type State = SignState<'tcx>;
 
-    fn bottom(&self, body: &'tcx Body<'tcx>) -> Self::State {
+    fn bottom(&self, body: &Body<'tcx>) -> Self::State {
         SignState::new_bot_state(self.places, body.arg_count)
     }
 
@@ -28,7 +28,7 @@ impl<'a, 'tcx> ForwardSemantics<'tcx> for SignSemantics<'a, 'tcx> {
         tcx: TyCtxt<'tcx>,
         st: &mut Self::State,
         stmt: &Statement<'tcx>,
-        local_decls: &'tcx LocalDecls<'tcx>,
+        local_decls: &LocalDecls<'tcx>,
     ) {
         transfer_stmt(tcx, st, stmt, local_decls)
     }
@@ -36,7 +36,7 @@ impl<'a, 'tcx> ForwardSemantics<'tcx> for SignSemantics<'a, 'tcx> {
     fn refine_edge(
         &self,
         tcx: TyCtxt<'tcx>,
-        body: &'tcx Body<'tcx>,
+        body: &Body<'tcx>,
         pred: rustc_middle::mir::BasicBlock,
         succ: rustc_middle::mir::BasicBlock,
         in_state: &Self::State,
@@ -48,7 +48,7 @@ impl<'a, 'tcx> ForwardSemantics<'tcx> for SignSemantics<'a, 'tcx> {
 pub fn run_sign<'tcx>(
     tcx: TyCtxt<'tcx>,
     def_id: DefId,
-    body: &'tcx Body<'tcx>,
+    body: &Body<'tcx>,
     cfg: &Cfg,
     places: &Vec<Place<'tcx>>,
 ) {

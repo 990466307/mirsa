@@ -5,7 +5,10 @@ use rustc_middle::ty::TyCtxt;
 use std::path::Path;
 
 use crate::framework::config::{load_bool_config, load_engine_config};
-use crate::framework::forward::{ForwardSemantics, PathForwardAnalysisConfig, PathForwardAnalysisResult};
+use crate::framework::forward::{
+    ForwardSemantics, PathForwardAnalysisConfig, PathForwardAnalysisResult,
+    state_before_location_from_result,
+};
 use crate::framework::printer::{
     StateEntries, collect_local_names, format_place_label, print_function_header,
     run_path_sensitive_analysis,
@@ -24,7 +27,7 @@ struct NullPtrSemantics<'a, 'tcx> {
 impl<'a, 'tcx> ForwardSemantics<'tcx> for NullPtrSemantics<'a, 'tcx> {
     type State = NullPtrState<'tcx>;
 
-    fn bottom(&self, body: &'tcx Body<'tcx>) -> Self::State {
+    fn bottom(&self, body: &Body<'tcx>) -> Self::State {
         NullPtrState::new_bot_state(self.places, self.refs, body.arg_count)
     }
 
@@ -33,7 +36,7 @@ impl<'a, 'tcx> ForwardSemantics<'tcx> for NullPtrSemantics<'a, 'tcx> {
         tcx: TyCtxt<'tcx>,
         st: &mut Self::State,
         stmt: &Statement<'tcx>,
-        local_decls: &'tcx LocalDecls<'tcx>,
+        local_decls: &LocalDecls<'tcx>,
     ) {
         transfer_stmt(tcx, st, stmt, local_decls)
     }
@@ -43,7 +46,7 @@ impl<'a, 'tcx> ForwardSemantics<'tcx> for NullPtrSemantics<'a, 'tcx> {
         tcx: TyCtxt<'tcx>,
         st: &mut Self::State,
         term: &rustc_middle::mir::Terminator<'tcx>,
-        local_decls: &'tcx LocalDecls<'tcx>,
+        local_decls: &LocalDecls<'tcx>,
     ) {
         transfer_terminator(tcx, st, term, local_decls)
     }
@@ -51,7 +54,7 @@ impl<'a, 'tcx> ForwardSemantics<'tcx> for NullPtrSemantics<'a, 'tcx> {
     fn refine_edge(
         &self,
         tcx: TyCtxt<'tcx>,
-        body: &'tcx Body<'tcx>,
+        body: &Body<'tcx>,
         pred: BasicBlock,
         succ: BasicBlock,
         in_state: &Self::State,
@@ -61,7 +64,7 @@ impl<'a, 'tcx> ForwardSemantics<'tcx> for NullPtrSemantics<'a, 'tcx> {
 }
 
 fn visible_entries<'tcx>(
-    body: &'tcx Body<'tcx>,
+    body: &Body<'tcx>,
     state: &NullPtrState<'tcx>,
 ) -> Vec<(String, String)> {
     let local_names = collect_local_names(body);
@@ -79,8 +82,8 @@ fn visible_entries<'tcx>(
 
 fn print_unsafe_pre_states<'tcx>(
     tcx: TyCtxt<'tcx>,
-    body: &'tcx Body<'tcx>,
-    states: &[NullPtrState<'tcx>],
+    body: &Body<'tcx>,
+    result: &PathForwardAnalysisResult<NullPtrState<'tcx>>,
 ) {
     for (bb, bbdata) in body.basic_blocks.iter_enumerated() {
         let Some(term) = bbdata.terminator.as_ref() else {
@@ -92,10 +95,14 @@ fn print_unsafe_pre_states<'tcx>(
         if !is_supported_unsafe_call(tcx, body, term) {
             continue;
         }
-        let Some(state) = states.get(bb.index()) else {
+        let location = rustc_middle::mir::Location {
+            block: bb,
+            statement_index: bbdata.statements.len(),
+        };
+        let Some(state) = state_before_location(tcx, body, result, location) else {
             continue;
         };
-        let entries = visible_entries(body, state);
+        let entries = visible_entries(body, &state);
         if entries.is_empty() {
             continue;
         }
@@ -111,7 +118,7 @@ fn print_unsafe_pre_states<'tcx>(
     }
 }
 
-fn has_supported_unsafe_calls<'tcx>(tcx: TyCtxt<'tcx>, body: &'tcx Body<'tcx>) -> bool {
+fn has_supported_unsafe_calls<'tcx>(tcx: TyCtxt<'tcx>, body: &Body<'tcx>) -> bool {
     body.basic_blocks.iter().any(|bbdata| {
         bbdata
             .terminator
@@ -122,7 +129,7 @@ fn has_supported_unsafe_calls<'tcx>(tcx: TyCtxt<'tcx>, body: &'tcx Body<'tcx>) -
 
 pub fn analyze_nullptr<'tcx>(
     tcx: TyCtxt<'tcx>,
-    body: &'tcx Body<'tcx>,
+    body: &Body<'tcx>,
     cfg: &Cfg,
     places: &[Place<'tcx>],
     ref_places: &[Place<'tcx>],
@@ -135,10 +142,19 @@ pub fn analyze_nullptr<'tcx>(
     run_path_sensitive_analysis(tcx, body, cfg, &semantics, config)
 }
 
+pub fn state_before_location<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    body: &Body<'tcx>,
+    result: &PathForwardAnalysisResult<NullPtrState<'tcx>>,
+    location: rustc_middle::mir::Location,
+) -> Option<NullPtrState<'tcx>> {
+    state_before_location_from_result(tcx, body, result, location, transfer_stmt)
+}
+
 pub fn run_nullptr<'tcx>(
     tcx: TyCtxt<'tcx>,
     def_id: DefId,
-    body: &'tcx Body<'tcx>,
+    body: &Body<'tcx>,
     cfg: &Cfg,
     places: &Vec<Place<'tcx>>,
     ref_places: &Vec<Place<'tcx>>,
@@ -161,6 +177,6 @@ pub fn run_nullptr<'tcx>(
         },
     );
     print_function_header(tcx, def_id);
-    print_unsafe_pre_states(tcx, body, &result.states);
-    emit_nonnull_call_warnings(tcx, body, &result.states, warn_on_maybe);
+    print_unsafe_pre_states(tcx, body, &result);
+    emit_nonnull_call_warnings(tcx, body, &result, warn_on_maybe);
 }

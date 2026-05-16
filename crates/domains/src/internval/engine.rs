@@ -1,16 +1,19 @@
 use super::condition_path::refine_edge;
 use super::state::InternvalState;
-use super::transfer::transfer_stmt;
+use super::transfer::{transfer_stmt, transfer_terminator};
 use super::warnings::{emit_internval_warnings, is_supported_unsafe_call};
 use crate::framework::config::load_engine_config;
-use crate::framework::forward::{ForwardSemantics, PathForwardAnalysisConfig};
+use crate::framework::forward::{
+    ForwardSemantics, PathForwardAnalysisConfig, PathForwardAnalysisResult,
+    state_before_location_from_result,
+};
 use crate::framework::printer::{
     StateEntries, collect_local_names, format_place_label, print_function_header,
     run_path_sensitive_analysis,
 };
 use core::cfg::Cfg;
 use rustc_hir::def_id::DefId;
-use rustc_middle::mir::{BasicBlock, Body, LocalDecls, Place, Statement, TerminatorKind};
+use rustc_middle::mir::{BasicBlock, Body, LocalDecls, Place, Statement, Terminator, TerminatorKind};
 use rustc_middle::ty::TyCtxt;
 use std::path::Path;
 
@@ -21,7 +24,7 @@ struct InternvalSemantics<'a, 'tcx> {
 impl<'a, 'tcx> ForwardSemantics<'tcx> for InternvalSemantics<'a, 'tcx> {
     type State = InternvalState<'tcx>;
 
-    fn bottom(&self, body: &'tcx Body<'tcx>) -> Self::State {
+    fn bottom(&self, body: &Body<'tcx>) -> Self::State {
         InternvalState::new_bot_state(self.places, body.arg_count)
     }
 
@@ -30,15 +33,25 @@ impl<'a, 'tcx> ForwardSemantics<'tcx> for InternvalSemantics<'a, 'tcx> {
         tcx: TyCtxt<'tcx>,
         st: &mut Self::State,
         stmt: &Statement<'tcx>,
-        local_decls: &'tcx LocalDecls<'tcx>,
+        local_decls: &LocalDecls<'tcx>,
     ) {
         transfer_stmt(tcx, st, stmt, local_decls)
+    }
+
+    fn transfer_terminator(
+        &self,
+        tcx: TyCtxt<'tcx>,
+        st: &mut Self::State,
+        term: &Terminator<'tcx>,
+        local_decls: &LocalDecls<'tcx>,
+    ) {
+        transfer_terminator(tcx, st, term, local_decls)
     }
 
     fn refine_edge(
         &self,
         tcx: TyCtxt<'tcx>,
-        body: &'tcx Body<'tcx>,
+        body: &Body<'tcx>,
         pred: BasicBlock,
         succ: BasicBlock,
         in_state: &Self::State,
@@ -48,7 +61,7 @@ impl<'a, 'tcx> ForwardSemantics<'tcx> for InternvalSemantics<'a, 'tcx> {
 }
 
 fn visible_entries<'tcx>(
-    body: &'tcx Body<'tcx>,
+    body: &Body<'tcx>,
     state: &InternvalState<'tcx>,
 ) -> Vec<(String, String)> {
     let local_names = collect_local_names(body);
@@ -66,8 +79,8 @@ fn visible_entries<'tcx>(
 
 fn print_unsafe_pre_states<'tcx>(
     tcx: TyCtxt<'tcx>,
-    body: &'tcx Body<'tcx>,
-    states: &[InternvalState<'tcx>],
+    body: &Body<'tcx>,
+    result: &PathForwardAnalysisResult<InternvalState<'tcx>>,
 ) {
     for (bb, bbdata) in body.basic_blocks.iter_enumerated() {
         let Some(term) = bbdata.terminator.as_ref() else {
@@ -79,10 +92,14 @@ fn print_unsafe_pre_states<'tcx>(
         if !is_supported_unsafe_call(tcx, body, term) {
             continue;
         }
-        let Some(state) = states.get(bb.index()) else {
+        let location = rustc_middle::mir::Location {
+            block: bb,
+            statement_index: bbdata.statements.len(),
+        };
+        let Some(state) = state_before_location(tcx, body, result, location) else {
             continue;
         };
-        let entries = visible_entries(body, state);
+        let entries = visible_entries(body, &state);
         if entries.is_empty() {
             continue;
         }
@@ -98,7 +115,7 @@ fn print_unsafe_pre_states<'tcx>(
     }
 }
 
-fn has_supported_unsafe_calls<'tcx>(tcx: TyCtxt<'tcx>, body: &'tcx Body<'tcx>) -> bool {
+fn has_supported_unsafe_calls<'tcx>(tcx: TyCtxt<'tcx>, body: &Body<'tcx>) -> bool {
     body.basic_blocks.iter().any(|bbdata| {
         bbdata
             .terminator
@@ -107,10 +124,30 @@ fn has_supported_unsafe_calls<'tcx>(tcx: TyCtxt<'tcx>, body: &'tcx Body<'tcx>) -
     })
 }
 
+pub fn analyze_internval<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    body: &Body<'tcx>,
+    cfg: &Cfg,
+    places: &[Place<'tcx>],
+    config: PathForwardAnalysisConfig,
+) -> PathForwardAnalysisResult<InternvalState<'tcx>> {
+    let semantics = InternvalSemantics { places };
+    run_path_sensitive_analysis(tcx, body, cfg, &semantics, config)
+}
+
+pub fn state_before_location<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    body: &Body<'tcx>,
+    result: &PathForwardAnalysisResult<InternvalState<'tcx>>,
+    location: rustc_middle::mir::Location,
+) -> Option<InternvalState<'tcx>> {
+    state_before_location_from_result(tcx, body, result, location, transfer_stmt)
+}
+
 pub fn run_internval<'tcx>(
     tcx: TyCtxt<'tcx>,
     def_id: DefId,
-    body: &'tcx Body<'tcx>,
+    body: &Body<'tcx>,
     cfg: &Cfg,
     places: &Vec<Place<'tcx>>,
 ) {
@@ -118,18 +155,17 @@ pub fn run_internval<'tcx>(
         return;
     }
     let config = load_engine_config(Path::new("crates/domains/src/internval/internval.toml"));
-    let semantics = InternvalSemantics { places };
-    let result = run_path_sensitive_analysis(
+    let result = analyze_internval(
         tcx,
         body,
         cfg,
-        &semantics,
+        places,
         PathForwardAnalysisConfig {
             max_paths: config.max_paths,
             widen_after_iterations: config.max_iterations,
         },
     );
     print_function_header(tcx, def_id);
-    print_unsafe_pre_states(tcx, body, &result.states);
-    emit_internval_warnings(tcx, body, &result.states);
+    print_unsafe_pre_states(tcx, body, &result);
+    emit_internval_warnings(tcx, body, &result);
 }

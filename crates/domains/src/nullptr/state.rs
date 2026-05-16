@@ -1,5 +1,6 @@
 use crate::framework::forward::DomainState;
 use crate::framework::printer::StateEntries;
+use crate::framework::eq_domain::{EqDomain, join_eq};
 use rustc_middle::mir::Place;
 use rustc_middle::ty::{Ty, TyKind};
 use std::collections::HashMap;
@@ -11,6 +12,7 @@ use super::abstract_value::{NullPtr, join};
 pub struct NullPtrState<'tcx> {
     pub pointers: HashMap<Place<'tcx>, NullPtr>,
     pub refs: HashMap<Place<'tcx>, NullPtr>,
+    pub eq: EqDomain<'tcx>,
 }
 
 impl<'tcx> NullPtrState<'tcx> {
@@ -18,6 +20,7 @@ impl<'tcx> NullPtrState<'tcx> {
         NullPtrState {
             pointers: HashMap::new(),
             refs: HashMap::new(),
+            eq: EqDomain::new(),
         }
     }
 
@@ -28,6 +31,7 @@ impl<'tcx> NullPtrState<'tcx> {
     ) -> Self {
         let mut pointers = HashMap::new();
         let mut refs = HashMap::new();
+        let mut eq = EqDomain::new();
         for place in pointer_places {
             let local_idx = place.local.index();
             let value = if local_idx >= 1 && local_idx <= arg_count {
@@ -36,6 +40,7 @@ impl<'tcx> NullPtrState<'tcx> {
                 NullPtr::Bot
             };
             pointers.insert(*place, value);
+            eq.kill(*place);
         }
 
         for ref_item in ref_places {
@@ -46,9 +51,10 @@ impl<'tcx> NullPtrState<'tcx> {
                 NullPtr::Bot
             };
             refs.insert(*ref_item, value);
+            eq.kill(*ref_item);
         }
 
-        NullPtrState { pointers, refs }
+        NullPtrState { pointers, refs, eq }
     }
 
     pub fn get_nullptr(&self, place: &Place<'tcx>) -> NullPtr {
@@ -113,7 +119,9 @@ impl<'tcx> DomainState<'tcx> for NullPtrState<'tcx> {
     }
 
     fn state_changed(previous: &Self, next: &Self) -> bool {
-        previous.pointers != next.pointers || previous.refs != next.refs
+        previous.pointers != next.pointers
+            || previous.refs != next.refs
+            || !previous.eq.equivalent_to(&next.eq)
     }
 }
 
@@ -176,5 +184,6 @@ pub fn join_state<'tcx>(a: &NullPtrState<'tcx>, b: &NullPtrState<'tcx>) -> NullP
         let vb = b.refs.get(k).copied().unwrap_or(NullPtr::Bot);
         out.refs.insert(*k, join(va, vb));
     }
+    out.eq = join_eq(&a.eq, &b.eq);
     out
 }

@@ -1,5 +1,6 @@
 use rustc_middle::mir::*;
 use rustc_middle::ty::{Ty, TyCtxt, TyKind, TypingEnv};
+use rustc_span::source_map::Spanned;
 
 use super::abstract_value::{NullPtr, join};
 use super::state::{
@@ -35,6 +36,14 @@ fn base_of_first_deref<'tcx>(tcx: TyCtxt<'tcx>, place: Place<'tcx>) -> Option<Pl
 
 fn is_null_ctor_path(path: &str) -> bool {
     (path.ends_with("::null") || path.ends_with("::null_mut")) && path.contains("::ptr::")
+}
+
+fn is_identity_ptr_cast_path(path: &str) -> bool {
+    path.ends_with("::cast")
+        || path.ends_with("::cast_const")
+        || path.ends_with("::cast_mut")
+        || path.ends_with("::with_addr")
+        || path.ends_with("::map_addr")
 }
 
 fn unknown_value_for_type(ty: Ty<'_>) -> NullPtr {
@@ -179,9 +188,36 @@ fn weak_set_place_value<'tcx>(
     }
 }
 
+fn kill_eq_for_place<'tcx>(st: &mut NullPtrState<'tcx>, place: Place<'tcx>, ty: Ty<'tcx>) {
+    if !has_runtime_index(place) {
+        st.eq.kill(place);
+        return;
+    }
+
+    for candidate in candidate_places(st, place, ty) {
+        st.eq.kill(candidate);
+    }
+}
+
+fn union_copy_eq<'tcx>(
+    st: &mut NullPtrState<'tcx>,
+    dst: Place<'tcx>,
+    dst_ty: Ty<'tcx>,
+    src: Place<'tcx>,
+    src_ty: Ty<'tcx>,
+) {
+    if !is_tracked(dst_ty) || !is_tracked(src_ty) {
+        return;
+    }
+    if has_runtime_index(dst) || has_runtime_index(src) {
+        return;
+    }
+    st.eq.union(dst, src);
+}
+
 pub(crate) fn eval_operand<'tcx>(
     tcx: TyCtxt<'tcx>,
-    local_decls: &'tcx LocalDecls<'tcx>,
+    local_decls: &LocalDecls<'tcx>,
     op: &Operand<'tcx>,
     st: &NullPtrState<'tcx>,
     dst_ty: Ty<'tcx>,
@@ -204,7 +240,7 @@ pub(crate) fn eval_operand<'tcx>(
 fn eval_cast_nullptr<'tcx>(
     tcx: TyCtxt<'tcx>,
     st: &NullPtrState<'tcx>,
-    local_decls: &'tcx LocalDecls<'tcx>,
+    local_decls: &LocalDecls<'tcx>,
     op: &Operand<'tcx>,
     dst_ty: Ty<'tcx>,
 ) -> NullPtr {
@@ -226,8 +262,10 @@ fn eval_cast_nullptr<'tcx>(
 
 fn call_return_value<'tcx>(
     tcx: TyCtxt<'tcx>,
-    local_decls: &'tcx LocalDecls<'tcx>,
+    st: &NullPtrState<'tcx>,
+    local_decls: &LocalDecls<'tcx>,
     func: &Operand<'tcx>,
+    args: &[Spanned<Operand<'tcx>>],
     dst_ty: Ty<'tcx>,
 ) -> NullPtr {
     if !is_tracked(dst_ty) {
@@ -239,6 +277,11 @@ fn call_return_value<'tcx>(
         if is_null_ctor_path(&name) {
             return NullPtr::Null;
         }
+        if is_identity_ptr_cast_path(&name) {
+            if let Some(first_arg) = args.first() {
+                return eval_operand(tcx, local_decls, &first_arg.node, st, dst_ty);
+            }
+        }
     }
 
     unknown_value_for_type(dst_ty)
@@ -248,7 +291,7 @@ pub fn transfer_stmt<'tcx>(
     tcx: TyCtxt<'tcx>,
     st: &mut NullPtrState<'tcx>,
     stmt: &Statement<'tcx>,
-    local_decls: &'tcx LocalDecls<'tcx>,
+    local_decls: &LocalDecls<'tcx>,
 ) {
     let StatementKind::Assign(assign) = &stmt.kind else {
         return;
@@ -266,6 +309,7 @@ pub fn transfer_stmt<'tcx>(
                     }
                     let field_place =
                         place.project_deeper(&[ProjectionElem::Field(i.into(), field_ty)], tcx);
+                    st.eq.kill(field_place);
                     let value = eval_operand(tcx, local_decls, op, st, field_ty);
                     set_tracked_value(st, field_place, field_ty, value);
                 }
@@ -285,6 +329,7 @@ pub fn transfer_stmt<'tcx>(
                         }],
                         tcx,
                     );
+                    st.eq.kill(elem_place);
                     let value = eval_operand(tcx, local_decls, op, st, *elem_ty);
                     set_tracked_value(st, elem_place, *elem_ty, value);
                 }
@@ -297,6 +342,15 @@ pub fn transfer_stmt<'tcx>(
 
     if !is_tracked(dst_ty) {
         return;
+    }
+
+    kill_eq_for_place(st, *place, dst_ty);
+
+    if let Rvalue::Use(op) = rvalue {
+        if let Operand::Copy(src) | Operand::Move(src) = op {
+            let src_ty = src.ty(local_decls, tcx).ty;
+            union_copy_eq(st, *place, dst_ty, *src, src_ty);
+        }
     }
 
     let value = match rvalue {
@@ -330,10 +384,13 @@ pub fn transfer_terminator<'tcx>(
     tcx: TyCtxt<'tcx>,
     st: &mut NullPtrState<'tcx>,
     term: &Terminator<'tcx>,
-    local_decls: &'tcx LocalDecls<'tcx>,
+    local_decls: &LocalDecls<'tcx>,
 ) {
     if let TerminatorKind::Call {
-        func, destination, ..
+        func,
+        args,
+        destination,
+        ..
     } = &term.kind
     {
         let dst_ty = destination.ty(local_decls, tcx).ty;
@@ -344,7 +401,8 @@ pub fn transfer_terminator<'tcx>(
             return;
         }
 
-        let value = call_return_value(tcx, local_decls, func, dst_ty);
+        let value = call_return_value(tcx, st, local_decls, func, args, dst_ty);
+        st.eq.kill(*destination);
         set_tracked_value(st, *destination, dst_ty, value);
     }
 }

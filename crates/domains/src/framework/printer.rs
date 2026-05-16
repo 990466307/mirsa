@@ -87,7 +87,7 @@ pub fn format_place_label<'tcx>(
 pub fn run_and_print_path_sensitive_analysis<'tcx, A>(
     tcx: TyCtxt<'tcx>,
     def_id: DefId,
-    body: &'tcx Body<'tcx>,
+    body: &Body<'tcx>,
     cfg: &Cfg,
     semantics: &A,
     config: PathForwardAnalysisConfig,
@@ -97,8 +97,8 @@ pub fn run_and_print_path_sensitive_analysis<'tcx, A>(
 {
     let result = run_path_sensitive_analysis(tcx, body, cfg, semantics, config);
     print_function_header(tcx, def_id);
-    let picked_bb_idx = pick_return_or_last_bb(body, result.states.len());
-    if let Some(state) = result.states.get(picked_bb_idx) {
+    let picked_bb_idx = pick_return_or_last_bb(body, result.out_states.len());
+    if let Some(state) = result.out_states.get(picked_bb_idx) {
         let local_names = collect_local_names(body);
         println!("  bb{picked_bb_idx}:");
         println!("  locals: {:?}", body.var_debug_info);
@@ -122,7 +122,7 @@ pub fn run_and_print_path_sensitive_analysis<'tcx, A>(
 
 pub fn run_path_sensitive_analysis<'tcx, A>(
     tcx: TyCtxt<'tcx>,
-    body: &'tcx Body<'tcx>,
+    body: &Body<'tcx>,
     cfg: &Cfg,
     semantics: &A,
     config: PathForwardAnalysisConfig,
@@ -134,7 +134,7 @@ where
 }
 
 pub fn print_all_bb_states<'tcx, S>(
-    body: &'tcx Body<'tcx>,
+    body: &Body<'tcx>,
     states: &[S],
     mut print_entry: impl FnMut(Place<'tcx>, &S) -> Option<String>,
 ) where

@@ -5,11 +5,13 @@ mod shared;
 use rustc_middle::mir::{Body, TerminatorKind};
 use rustc_middle::ty::{TyCtxt, TyKind};
 
+use crate::framework::forward::PathForwardAnalysisResult;
 use crate::nullptr::NullPtrState;
+use crate::nullptr::engine::state_before_location;
 
 fn call_path<'tcx>(
     tcx: TyCtxt<'tcx>,
-    body: &'tcx Body<'tcx>,
+    body: &Body<'tcx>,
     term: &rustc_middle::mir::Terminator<'tcx>,
 ) -> Option<String> {
     let TerminatorKind::Call { func, .. } = &term.kind else {
@@ -23,7 +25,7 @@ fn call_path<'tcx>(
 
 pub fn is_supported_unsafe_call<'tcx>(
     tcx: TyCtxt<'tcx>,
-    body: &'tcx Body<'tcx>,
+    body: &Body<'tcx>,
     term: &rustc_middle::mir::Terminator<'tcx>,
 ) -> bool {
     let Some(path) = call_path(tcx, body, term) else {
@@ -34,8 +36,8 @@ pub fn is_supported_unsafe_call<'tcx>(
 
 pub fn emit_nonnull_call_warnings<'tcx>(
     tcx: TyCtxt<'tcx>,
-    body: &'tcx Body<'tcx>,
-    states: &[NullPtrState<'tcx>],
+    body: &Body<'tcx>,
+    result: &PathForwardAnalysisResult<NullPtrState<'tcx>>,
     warn_on_maybe: bool,
 ) {
     for (bb, bbdata) in body.basic_blocks.iter_enumerated() {
@@ -45,14 +47,18 @@ pub fn emit_nonnull_call_warnings<'tcx>(
         let Some(path) = call_path(tcx, body, term) else {
             continue;
         };
-        let Some(state) = states.get(bb.index()) else {
+        let location = rustc_middle::mir::Location {
+            block: bb,
+            statement_index: bbdata.statements.len(),
+        };
+        let Some(state) = state_before_location(tcx, body, result, location) else {
             continue;
         };
 
         if copy_nonoverlapping::matches_path(&path) {
-            copy_nonoverlapping::emit(tcx, body, term, state, warn_on_maybe);
+            copy_nonoverlapping::emit(tcx, body, term, &state, warn_on_maybe);
         } else if nonnull_arg::matches_path(&path) {
-            nonnull_arg::emit(tcx, body, term, state, warn_on_maybe);
+            nonnull_arg::emit(tcx, body, term, &state, warn_on_maybe);
         }
     }
 }

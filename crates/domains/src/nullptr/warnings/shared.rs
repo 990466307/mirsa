@@ -29,7 +29,7 @@ pub(crate) fn level_for_value(value: NullPtr, warn_on_maybe: bool) -> WarningLev
 
 pub(crate) fn eval_call_arg<'tcx>(
     tcx: TyCtxt<'tcx>,
-    body: &'tcx Body<'tcx>,
+    body: &Body<'tcx>,
     state: &NullPtrState<'tcx>,
     arg: &Operand<'tcx>,
 ) -> NullPtr {

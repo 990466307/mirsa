@@ -9,13 +9,15 @@ pub(crate) fn matches_path(path: &str) -> bool {
     (path.ends_with("::new_unchecked") && path.contains("::NonNull"))
         || (path.ends_with("::from_ptr") && path.contains("::CStr"))
         || (path.ends_with("::from_raw_parts") && path.contains("::Vec"))
+        || (path.ends_with("::from_raw_parts") && path.contains("::slice"))
+        || (path.ends_with("::from_raw_parts_mut") && path.contains("::slice"))
         || (path.ends_with("::read") && path.contains("::ptr::"))
         || (path.ends_with("::write") && path.contains("::ptr::"))
 }
 
 pub(crate) fn emit<'tcx>(
     tcx: TyCtxt<'tcx>,
-    body: &'tcx Body<'tcx>,
+    body: &Body<'tcx>,
     term: &Terminator<'tcx>,
     state: &NullPtrState<'tcx>,
     warn_on_maybe: bool,

@@ -1,13 +1,12 @@
 use crate::framework::forward::DomainState;
 use crate::framework::printer::StateEntries;
-use crate::internval::eq_domain::join_eq;
+use crate::framework::eq_domain::{EqDomain, join_eq};
 use rustc_middle::mir::Place;
 use rustc_middle::ty::{Ty, TyCtxt, TyKind};
 use std::collections::HashMap;
 use std::fmt;
 
 use super::abstract_value::{Internval, join, widen};
-use super::eq_domain::EqDomain;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InternvalState<'tcx> {
@@ -164,7 +163,7 @@ impl<'tcx> StateEntries<'tcx> for InternvalState<'tcx> {
 
 impl<'tcx> InternvalState<'tcx> {
     pub fn get_internval(&self, place: &Place<'tcx>) -> Internval {
-        self.internval.get(place).copied().unwrap()
+        self.internval.get(place).copied().unwrap_or_else(Internval::empty)
     }
     pub fn set_internval(&mut self, place: Place<'tcx>, internval: Internval) {
         self.internval.insert(place, internval);
@@ -181,6 +180,7 @@ impl<'tcx> InternvalState<'tcx> {
     pub fn clear_slice_meta(&mut self, place: &Place<'tcx>) {
         self.slice_meta.remove(place);
     }
+
 }
 
 pub fn join_state<'tcx>(
@@ -189,8 +189,8 @@ pub fn join_state<'tcx>(
 ) -> InternvalState<'tcx> {
     let mut out = InternvalState::default();
     for k in a.internval.keys().chain(b.internval.keys()) {
-        let ia = a.internval.get(k).copied().unwrap();
-        let ib = b.internval.get(k).copied().unwrap();
+        let ia = a.internval.get(k).copied().unwrap_or_else(Internval::empty);
+        let ib = b.internval.get(k).copied().unwrap_or_else(Internval::empty);
         out.internval.insert(*k, join(&ia, &ib));
     }
     for k in a.slice_meta.keys().chain(b.slice_meta.keys()) {
@@ -216,8 +216,8 @@ pub fn widen_state<'tcx>(
 ) -> InternvalState<'tcx> {
     let mut out = InternvalState::default();
     for k in a.internval.keys().chain(b.internval.keys()) {
-        let ia = a.internval.get(k).copied().unwrap();
-        let ib = b.internval.get(k).copied().unwrap();
+        let ia = a.internval.get(k).copied().unwrap_or_else(Internval::empty);
+        let ib = b.internval.get(k).copied().unwrap_or_else(Internval::empty);
         let widened = widen(&ia, &ib);
         out.internval.insert(*k, widened);
     }

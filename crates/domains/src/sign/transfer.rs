@@ -78,7 +78,7 @@ fn has_runtime_index<'tcx>(place: Place<'tcx>) -> bool {
 
 fn resolve_indexed_place<'tcx>(
     tcx: TyCtxt<'tcx>,
-    local_decls: &'tcx LocalDecls<'tcx>,
+    local_decls: &LocalDecls<'tcx>,
     st: &SignState<'tcx>,
     place: Place<'tcx>,
 ) -> Option<Place<'tcx>> {
@@ -132,7 +132,7 @@ fn resolve_indexed_place<'tcx>(
 
 fn eval_place<'tcx>(
     tcx: TyCtxt<'tcx>,
-    local_decls: &'tcx LocalDecls<'tcx>,
+    local_decls: &LocalDecls<'tcx>,
     place: Place<'tcx>,
     st: &SignState<'tcx>,
 ) -> Sign {
@@ -147,7 +147,7 @@ fn eval_place<'tcx>(
 
 pub(crate) fn eval_operand<'tcx>(
     tcx: TyCtxt<'tcx>,
-    local_decls: &'tcx LocalDecls<'tcx>,
+    local_decls: &LocalDecls<'tcx>,
     op: &Operand<'tcx>,
     st: &SignState<'tcx>,
 ) -> Sign {
@@ -160,7 +160,7 @@ pub(crate) fn eval_operand<'tcx>(
 fn eval_cast_sign<'tcx>(
     tcx: TyCtxt<'tcx>,
     st: &SignState<'tcx>,
-    local_decls: &'tcx LocalDecls<'tcx>,
+    local_decls: &LocalDecls<'tcx>,
     op: &Operand<'tcx>,
     dst_ty: Ty<'tcx>,
 ) -> Sign {
@@ -194,7 +194,7 @@ pub fn transfer_stmt<'tcx>(
     tcx: TyCtxt<'tcx>,
     st: &mut SignState<'tcx>,
     stmt: &Statement<'tcx>,
-    local_decls: &'tcx LocalDecls<'tcx>,
+    local_decls: &LocalDecls<'tcx>,
 ) {
     let StatementKind::Assign(assign) = &stmt.kind else {
         println!(
@@ -324,7 +324,7 @@ fn eval_binary_op_with_overflow_sign<'tcx>(
     tcx: TyCtxt<'tcx>,
     st: &mut SignState<'tcx>,
     place: &Place<'tcx>,
-    local_decls: &'tcx LocalDecls<'tcx>,
+    local_decls: &LocalDecls<'tcx>,
     op: &BinOp,
     ops: &Box<(Operand<'tcx>, Operand<'tcx>)>,
 ) {
@@ -355,7 +355,7 @@ fn eval_binary_op_with_overflow_sign<'tcx>(
 fn eval_binary_op_sign<'tcx>(
     tcx: TyCtxt<'tcx>,
     st: &mut SignState<'tcx>,
-    local_decls: &'tcx LocalDecls<'tcx>,
+    local_decls: &LocalDecls<'tcx>,
     op: &BinOp,
     ops: &Box<(Operand<'tcx>, Operand<'tcx>)>,
 ) -> Sign {
@@ -382,7 +382,7 @@ fn eval_binary_op_sign<'tcx>(
 fn eval_unary_op_sign<'tcx>(
     tcx: TyCtxt<'tcx>,
     st: &mut SignState<'tcx>,
-    local_decls: &'tcx LocalDecls<'tcx>,
+    local_decls: &LocalDecls<'tcx>,
     op: &UnOp,
     arg: &Operand<'tcx>,
 ) -> Sign {

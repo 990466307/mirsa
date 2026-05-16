@@ -80,7 +80,7 @@ fn refine_place_with_sign<'tcx>(st: &mut SignState<'tcx>, place: Place<'tcx>, ne
 }
 
 fn find_last_cmp_assign<'tcx>(
-    body: &'tcx Body<'tcx>,
+    body: &Body<'tcx>,
     bb: BasicBlock,
     target: Place<'tcx>,
 ) -> Option<(BinOp, Operand<'tcx>, Operand<'tcx>)> {
@@ -121,7 +121,7 @@ fn cmp_result(op: BinOp, l: Sign, r: Sign) -> Sign {
 
 fn refine_cmp<'tcx>(
     tcx: TyCtxt<'tcx>,
-    local_decls: &'tcx LocalDecls<'tcx>,
+    local_decls: &LocalDecls<'tcx>,
     st: &mut SignState<'tcx>,
     op: BinOp,
     truth: bool,
@@ -188,7 +188,7 @@ fn refine_cmp<'tcx>(
 
 pub fn refine_edge<'tcx>(
     tcx: TyCtxt<'tcx>,
-    body: &'tcx Body<'tcx>,
+    body: &Body<'tcx>,
     pred: BasicBlock,
     succ: BasicBlock,
     in_state: &SignState<'tcx>,

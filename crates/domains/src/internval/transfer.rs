@@ -1,5 +1,4 @@
 use rustc_middle::mir::*;
-use rustc_middle::ty::adjustment::PointerCoercion;
 use rustc_middle::ty::{Ty, TyCtxt, TyKind};
 
 use super::abstract_value::*;
@@ -18,7 +17,7 @@ fn i128_to_bits(value: i128, bit_width: u64) -> u128 {
 fn eval_cast_internval<'tcx>(
     tcx: TyCtxt<'tcx>,
     st: &InternvalState<'tcx>,
-    local_decls: &'tcx LocalDecls<'tcx>,
+    local_decls: &LocalDecls<'tcx>,
     op: &Operand<'tcx>,
     dst_ty: Ty<'tcx>,
 ) -> Internval {
@@ -108,7 +107,7 @@ fn has_runtime_index<'tcx>(place: Place<'tcx>) -> bool {
 // 当索引区间为单点时，把动态索引解析成常量索引。
 fn resolve_indexed_place<'tcx>(
     tcx: TyCtxt<'tcx>,
-    local_decls: &'tcx LocalDecls<'tcx>,
+    local_decls: &LocalDecls<'tcx>,
     st: &InternvalState<'tcx>,
     place: Place<'tcx>,
 ) -> Option<Place<'tcx>> {
@@ -150,10 +149,75 @@ fn resolve_indexed_place<'tcx>(
     Some(resolved)
 }
 
+fn slice_or_array_len<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    local_decls: &LocalDecls<'tcx>,
+    st: &InternvalState<'tcx>,
+    place: Place<'tcx>,
+) -> Option<Internval> {
+    let ty = place.ty(local_decls, tcx).ty;
+    match ty.kind() {
+        TyKind::Array(_, len) => len
+            .try_to_target_usize(tcx)
+            .map(|len| Internval::new(len as i128, len as i128)),
+        TyKind::Slice(_) => st.get_slice_meta(&place),
+        TyKind::Ref(_, inner, _) => match inner.kind() {
+            TyKind::Array(_, len) => len
+                .try_to_target_usize(tcx)
+                .map(|len| Internval::new(len as i128, len as i128)),
+            TyKind::Slice(_) => st.get_slice_meta(&place),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn operand_slice_or_array_len<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    local_decls: &LocalDecls<'tcx>,
+    st: &InternvalState<'tcx>,
+    op: &Operand<'tcx>,
+) -> Option<Internval> {
+    match op {
+        Operand::Copy(place) | Operand::Move(place) => {
+            slice_or_array_len(tcx, local_decls, st, *place)
+        }
+        Operand::Constant(_) => None,
+    }
+}
+
+fn operand_place<'tcx>(op: &Operand<'tcx>) -> Option<Place<'tcx>> {
+    match op {
+        Operand::Copy(place) | Operand::Move(place) => Some(*place),
+        Operand::Constant(_) => None,
+    }
+}
+
+fn singleton_nonnegative(iv: Internval) -> Option<u64> {
+    if iv.is_empty() || iv.low != iv.high || iv.low < 0 {
+        return None;
+    }
+    Some(iv.low as u64)
+}
+
+fn terminator_call_path<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    local_decls: &LocalDecls<'tcx>,
+    term: &Terminator<'tcx>,
+) -> Option<String> {
+    let TerminatorKind::Call { func, .. } = &term.kind else {
+        return None;
+    };
+    let TyKind::FnDef(def_id, _) = func.ty(local_decls, tcx).kind() else {
+        return None;
+    };
+    Some(tcx.def_path_str(*def_id))
+}
+
 // 当动态索引左值无法精确解析时，将其对应数组元素全部弱化为 Top。
 fn eval_place<'tcx>(
     tcx: TyCtxt<'tcx>,
-    local_decls: &'tcx LocalDecls<'tcx>,
+    local_decls: &LocalDecls<'tcx>,
     place: Place<'tcx>,
     st: &InternvalState<'tcx>,
 ) -> Internval {
@@ -169,7 +233,7 @@ fn eval_place<'tcx>(
 // 将操作数求值为区间值。
 pub(crate) fn eval_operand<'tcx>(
     tcx: TyCtxt<'tcx>,
-    local_decls: &'tcx LocalDecls<'tcx>,
+    local_decls: &LocalDecls<'tcx>,
     op: &Operand<'tcx>,
     st: &InternvalState<'tcx>,
 ) -> Internval {
@@ -184,7 +248,7 @@ fn eval_binary_op_with_overflow_internval<'tcx>(
     tcx: TyCtxt<'tcx>,
     st: &mut InternvalState<'tcx>,
     place: &Place<'tcx>,
-    local_decls: &'tcx LocalDecls<'tcx>,
+    local_decls: &LocalDecls<'tcx>,
     op: &BinOp,
     ops: &Box<(Operand<'tcx>, Operand<'tcx>)>,
 ) {
@@ -216,7 +280,7 @@ fn eval_binary_op_with_overflow_internval<'tcx>(
 fn eval_binary_op_internval<'tcx>(
     tcx: TyCtxt<'tcx>,
     st: &mut InternvalState<'tcx>,
-    local_decls: &'tcx LocalDecls<'tcx>,
+    local_decls: &LocalDecls<'tcx>,
     op: &BinOp,
     ops: &Box<(Operand<'tcx>, Operand<'tcx>)>,
 ) -> Internval {
@@ -246,7 +310,7 @@ fn eval_binary_op_internval<'tcx>(
 fn eval_unary_op_internval<'tcx>(
     tcx: TyCtxt<'tcx>,
     st: &mut InternvalState<'tcx>,
-    local_decls: &'tcx LocalDecls<'tcx>,
+    local_decls: &LocalDecls<'tcx>,
     op: &UnOp,
     arg: &Operand<'tcx>,
 ) -> Internval {
@@ -263,7 +327,7 @@ pub fn transfer_stmt<'tcx>(
     tcx: TyCtxt<'tcx>,
     st: &mut InternvalState<'tcx>,
     stmt: &Statement<'tcx>,
-    local_decls: &'tcx LocalDecls<'tcx>,
+    local_decls: &LocalDecls<'tcx>,
 ) {
     let kind = &stmt.kind;
     match kind {
@@ -295,10 +359,6 @@ pub fn transfer_stmt<'tcx>(
                     })
                     .collect();
                 if targets.is_empty() {
-                    println!(
-                        "Warning: unresolved indexed lhs {:?}, but no concrete array elements found.",
-                        place
-                    );
                     return;
                 }
                 for p in targets {
@@ -368,10 +428,7 @@ pub fn transfer_stmt<'tcx>(
                 Rvalue::Cast(cast_kind, op, dst_ty) => {
                     let rhs_internval = eval_cast_internval(tcx, st, local_decls, op, *dst_ty);
                     st.set_internval(dst_place, rhs_internval);
-                    if matches!(
-                        cast_kind,
-                        CastKind::PointerCoercion(PointerCoercion::Unsize, _)
-                    ) {
+                    if matches!(cast_kind, CastKind::PointerCoercion(_, _)) {
                         if let Operand::Copy(src) | Operand::Move(src) = op {
                             let src_ty = src.ty(local_decls, tcx).ty;
                             if let TyKind::Ref(_, inner, _) = src_ty.kind() {
@@ -381,6 +438,7 @@ pub fn transfer_stmt<'tcx>(
                                             dst_place,
                                             Internval::new(len as i128, len as i128),
                                         );
+                                        st.eq.union(dst_place, *src);
                                     }
                                 }
                             }
@@ -448,6 +506,7 @@ pub fn transfer_stmt<'tcx>(
                     let borrowed_ty = borrowed_place.ty(local_decls, tcx).ty;
                     match borrowed_ty.kind() {
                         TyKind::Array(_, len) => {
+                            st.eq.union(dst_place, *borrowed_place);
                             if let Some(len) = len.try_to_target_usize(tcx) {
                                 st.set_slice_meta(
                                     dst_place,
@@ -469,4 +528,94 @@ pub fn transfer_stmt<'tcx>(
         }
         _ => {}
     }
+}
+
+pub fn transfer_terminator<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    st: &mut InternvalState<'tcx>,
+    term: &Terminator<'tcx>,
+    local_decls: &LocalDecls<'tcx>,
+) {
+    let TerminatorKind::Call {
+        args, destination, ..
+    } = &term.kind
+    else {
+        return;
+    };
+    let Some(path) = terminator_call_path(tcx, local_decls, term) else {
+        return;
+    };
+    if !path.ends_with("::get_unchecked") && !path.ends_with("::get_unchecked_mut") {
+        return;
+    }
+    if args.len() < 2 {
+        return;
+    }
+    let Some(receiver_place) = operand_place(&args[0].node) else {
+        return;
+    };
+    let index = eval_operand(tcx, local_decls, &args[1].node, st);
+    let Some(index) = singleton_nonnegative(index) else {
+        return;
+    };
+    let Some(len) =
+        operand_slice_or_array_len(tcx, local_decls, st, &args[0].node).and_then(singleton_nonnegative)
+    else {
+        return;
+    };
+    if index >= len {
+        return;
+    }
+    let mut source_place = receiver_place;
+    let mut source_is_ref = true;
+    for candidate in st.internval.keys().copied() {
+        if !st.eq.equiv_readonly(receiver_place, candidate) {
+            continue;
+        }
+        if matches!(candidate.ty(local_decls, tcx).ty.kind(), TyKind::Array(_, _)) {
+            source_place = candidate;
+            source_is_ref = false;
+            break;
+        }
+    }
+    if source_is_ref {
+        for candidate in st.internval.keys().copied() {
+            if !st.eq.equiv_readonly(receiver_place, candidate) {
+                continue;
+            }
+            if let TyKind::Ref(_, inner, _) = candidate.ty(local_decls, tcx).ty.kind() {
+                if matches!(inner.kind(), TyKind::Array(_, _)) {
+                    source_place = candidate;
+                    break;
+                }
+            }
+        }
+    }
+    let elem_place = if source_is_ref {
+        source_place.project_deeper(
+            &[
+                ProjectionElem::Deref,
+                ProjectionElem::ConstantIndex {
+                    offset: index,
+                    min_length: len,
+                    from_end: false,
+                },
+            ],
+            tcx,
+        )
+    } else {
+        source_place.project_deeper(
+            &[
+                ProjectionElem::ConstantIndex {
+                    offset: index,
+                    min_length: len,
+                    from_end: false,
+                },
+            ],
+            tcx,
+        )
+    };
+    let dst_deref = destination.project_deeper(&[ProjectionElem::Deref], tcx);
+    let elem_iv = eval_place(tcx, local_decls, elem_place, st);
+    st.set_internval(dst_deref, elem_iv);
 }

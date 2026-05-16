@@ -2,8 +2,54 @@ use rustc_middle::mir::*;
 use rustc_middle::ty::{Ty, TyCtxt, TyKind};
 
 use super::abstract_value::NullPtr;
-use super::state::{NullPtrState, get_tracked_value, is_tracked, set_tracked_value};
+use super::state::{NullPtrState, get_tracked_value, is_tracked};
 use super::transfer::const_nullness;
+
+fn meet_nullptr(current: NullPtr, wanted: NullPtr) -> Option<NullPtr> {
+    match (current, wanted) {
+        (NullPtr::Bot, _) | (_, NullPtr::Bot) => None,
+        (NullPtr::MaybeNull, x) | (x, NullPtr::MaybeNull) => Some(x),
+        (x, y) if x == y => Some(x),
+        _ => None,
+    }
+}
+
+fn refine_tracked_place<'tcx>(
+    st: &mut NullPtrState<'tcx>,
+    place: Place<'tcx>,
+    refined: NullPtr,
+) -> bool {
+    if st.refs.contains_key(&place) {
+        st.set_ref(place, refined);
+    } else if st.pointers.contains_key(&place) {
+        st.set_nullptr(place, refined);
+    } else {
+        return false;
+    }
+
+    let mut all_places: Vec<Place<'tcx>> = st.pointers.keys().copied().collect();
+    all_places.extend(st.refs.keys().copied());
+    for other in all_places {
+        if other == place || !st.eq.equiv_readonly(place, other) {
+            continue;
+        }
+        let other_current = if st.refs.contains_key(&other) {
+            st.get_ref(&other)
+        } else {
+            st.get_nullptr(&other)
+        };
+        let Some(other_refined) = meet_nullptr(other_current, refined) else {
+            st.eq.kill(other);
+            continue;
+        };
+        if st.refs.contains_key(&other) {
+            st.set_ref(other, other_refined);
+        } else {
+            st.set_nullptr(other, other_refined);
+        }
+    }
+    true
+}
 
 fn refine_place_to<'tcx>(
     st: &mut NullPtrState<'tcx>,
@@ -15,20 +61,14 @@ fn refine_place_to<'tcx>(
         return true;
     }
     let current = get_tracked_value(st, place, ty);
-    let Some(refined) = (match (current, wanted) {
-        (NullPtr::Bot, _) | (_, NullPtr::Bot) => None,
-        (NullPtr::MaybeNull, x) | (x, NullPtr::MaybeNull) => Some(x),
-        (x, y) if x == y => Some(x),
-        _ => None,
-    }) else {
+    let Some(refined) = meet_nullptr(current, wanted) else {
         return false;
     };
-    set_tracked_value(st, place, ty, refined);
-    true
+    refine_tracked_place(st, place, refined)
 }
 
 fn find_last_cmp_assign<'tcx>(
-    body: &'tcx Body<'tcx>,
+    body: &Body<'tcx>,
     bb: BasicBlock,
     target: Place<'tcx>,
 ) -> Option<(BinOp, Operand<'tcx>, Operand<'tcx>)> {
@@ -51,9 +91,63 @@ fn find_last_cmp_assign<'tcx>(
     None
 }
 
+fn is_ptr_is_null_path(path: &str) -> bool {
+    path.ends_with("::is_null") && path.contains("::ptr::")
+}
+
+enum BoolDef<'tcx> {
+    Cmp(BinOp, Operand<'tcx>, Operand<'tcx>),
+    IsNull(Operand<'tcx>),
+}
+
+fn find_bool_def<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    body: &Body<'tcx>,
+    bb: BasicBlock,
+    target: Place<'tcx>,
+) -> Option<BoolDef<'tcx>> {
+    if let Some((op, left, right)) = find_last_cmp_assign(body, bb, target) {
+        return Some(BoolDef::Cmp(op, left, right));
+    }
+
+    let mut matches = body
+        .basic_blocks
+        .iter_enumerated()
+        .filter_map(|(_, bbdata)| {
+            let term = bbdata.terminator.as_ref()?;
+            let TerminatorKind::Call {
+                func,
+                args,
+                destination,
+                target: Some(call_target),
+                ..
+            } = &term.kind
+            else {
+                return None;
+            };
+            if *call_target != bb || *destination != target {
+                return None;
+            }
+            let TyKind::FnDef(def_id, _) = func.ty(&body.local_decls, tcx).kind() else {
+                return None;
+            };
+            let path = tcx.def_path_str(*def_id);
+            if !is_ptr_is_null_path(&path) {
+                return None;
+            }
+            Some(BoolDef::IsNull(args.first()?.node.clone()))
+        });
+
+    let first = matches.next()?;
+    if matches.next().is_some() {
+        return None;
+    }
+    Some(first)
+}
+
 fn operand_nullness<'tcx>(
     tcx: TyCtxt<'tcx>,
-    local_decls: &'tcx LocalDecls<'tcx>,
+    local_decls: &LocalDecls<'tcx>,
     st: &NullPtrState<'tcx>,
     op: &Operand<'tcx>,
 ) -> Option<NullPtr> {
@@ -74,7 +168,7 @@ fn operand_nullness<'tcx>(
 
 fn refine_cmp<'tcx>(
     tcx: TyCtxt<'tcx>,
-    local_decls: &'tcx LocalDecls<'tcx>,
+    local_decls: &LocalDecls<'tcx>,
     st: &mut NullPtrState<'tcx>,
     op: BinOp,
     truth: bool,
@@ -119,12 +213,51 @@ fn refine_cmp<'tcx>(
     try_refine_side(st, left, right)?;
     try_refine_side(st, right, left)?;
 
+    if equal {
+        if let (Operand::Copy(pl) | Operand::Move(pl), Operand::Copy(pr) | Operand::Move(pr)) =
+            (left, right)
+        {
+            let left_ty = pl.ty(local_decls, tcx).ty;
+            let right_ty = pr.ty(local_decls, tcx).ty;
+            if is_tracked(left_ty) && is_tracked(right_ty) {
+                st.eq.union(*pl, *pr);
+            }
+        }
+    }
+
     Some(())
+}
+
+fn refine_is_null<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    local_decls: &LocalDecls<'tcx>,
+    st: &mut NullPtrState<'tcx>,
+    truth: bool,
+    arg: &Operand<'tcx>,
+) -> Option<()> {
+    let (Operand::Copy(place) | Operand::Move(place)) = arg else {
+        return Some(());
+    };
+    let ty = place.ty(local_decls, tcx).ty;
+    if !is_tracked(ty) {
+        return Some(());
+    }
+
+    let wanted = if truth {
+        NullPtr::Null
+    } else {
+        NullPtr::NonNull
+    };
+    if refine_place_to(st, *place, ty, wanted) {
+        Some(())
+    } else {
+        None
+    }
 }
 
 pub fn refine_edge<'tcx>(
     tcx: TyCtxt<'tcx>,
-    body: &'tcx Body<'tcx>,
+    body: &Body<'tcx>,
     pred: BasicBlock,
     succ: BasicBlock,
     in_state: &NullPtrState<'tcx>,
@@ -176,8 +309,15 @@ pub fn refine_edge<'tcx>(
 
             let mut st = in_state.clone();
             if let Operand::Copy(cond_place) | Operand::Move(cond_place) = discr {
-                if let Some((op, left, right)) = find_last_cmp_assign(body, pred, *cond_place) {
-                    refine_cmp(tcx, &body.local_decls, &mut st, op, truth, &left, &right)?;
+                if let Some(def) = find_bool_def(tcx, body, pred, *cond_place) {
+                    match def {
+                        BoolDef::Cmp(op, left, right) => {
+                            refine_cmp(tcx, &body.local_decls, &mut st, op, truth, &left, &right)?
+                        }
+                        BoolDef::IsNull(arg) => {
+                            refine_is_null(tcx, &body.local_decls, &mut st, truth, &arg)?
+                        }
+                    }
                 }
             }
             Some(st)

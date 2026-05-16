@@ -13,7 +13,9 @@ pub fn build_cfg(body: &Body<'_>) -> Cfg {
     for (bb, bbdata) in body.basic_blocks.iter_enumerated() {
         let mut edges = Vec::new();
         if let Some(term) = &bbdata.terminator {
-            term.successors().for_each(|s| edges.push(s));
+            term.successors()
+                .filter(|s| !body.basic_blocks[*s].is_cleanup)
+                .for_each(|s| edges.push(s));
         }
         succ[bb.index()] = edges.clone();
         for s in edges {

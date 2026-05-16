@@ -24,6 +24,12 @@
     - `get_unchecked` / `get_unchecked_mut`：`index < len`
     - `split_at_unchecked` / `split_at_mut_unchecked`：`mid <= len`
 
+- `ptr::copy_nonoverlapping`
+  - 规则文件：
+    [`crates/domains/src/internval/warnings/copy_nonoverlapping.rs`](/home/wentao/mirsa/crates/domains/src/internval/warnings/copy_nonoverlapping.rs)
+  - 安全性质：
+    `count` 不能超过源对象和目标对象的可用长度
+
 辅助函数：
 - [`crates/domains/src/internval/warnings/shared.rs`](/home/wentao/mirsa/crates/domains/src/internval/warnings/shared.rs)
 
@@ -36,6 +42,8 @@
 - `NonNull::new_unchecked`
 - `CStr::from_ptr`
 - `Vec::from_raw_parts`
+- `slice::from_raw_parts`
+- `slice::from_raw_parts_mut`
 - `ptr::read`
 - `ptr::write`
   - 规则文件：
@@ -55,8 +63,11 @@
 
 ## 最终测试集
 
-当前的最终数据集主要覆盖上述 API：
-- 数值类：
+当前的最终数据集主要覆盖上述 API，并保留对应 Safe4U 原始片段：
+- 数值类，22 个样例：
   [`examples/safe4u_final_numeric`](/home/wentao/mirsa/examples/safe4u_final_numeric)
-- 指针类：
+- 指针类，21 个样例：
   [`examples/safe4u_final_pointer`](/home/wentao/mirsa/examples/safe4u_final_pointer)
+
+更详细的测试集说明见：
+- [`TEST_SUITE.md`](/home/wentao/mirsa/TEST_SUITE.md)

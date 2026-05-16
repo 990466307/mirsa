@@ -11,7 +11,7 @@ pub(crate) fn matches_path(path: &str) -> bool {
 
 pub(crate) fn emit<'tcx>(
     tcx: TyCtxt<'tcx>,
-    body: &'tcx Body<'tcx>,
+    body: &Body<'tcx>,
     term: &Terminator<'tcx>,
     state: &NullPtrState<'tcx>,
     warn_on_maybe: bool,

@@ -1,2 +1,5 @@
 /target
 /.nested-git-backup/
+*.md
+!TEST_SUITE.md
+*.docx

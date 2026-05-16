@@ -1,7 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 
 use core::cfg::Cfg;
-use rustc_middle::mir::{BasicBlock, Body, LocalDecls, START_BLOCK, Statement, Terminator};
+use rustc_middle::mir::{BasicBlock, Body, LocalDecls, Location, START_BLOCK, Statement, Terminator};
 use rustc_middle::ty::TyCtxt;
 
 #[derive(Clone, Copy, Debug)]
@@ -12,7 +12,8 @@ pub struct PathForwardAnalysisConfig {
 
 #[derive(Clone, Debug)]
 pub struct PathForwardAnalysisResult<S> {
-    pub states: Vec<S>,
+    pub in_states: Vec<S>,
+    pub out_states: Vec<S>,
 }
 
 pub trait DomainState<'tcx>: Clone + PartialEq {
@@ -30,9 +31,9 @@ pub trait DomainState<'tcx>: Clone + PartialEq {
 pub trait ForwardSemantics<'tcx> {
     type State: DomainState<'tcx>;
 
-    fn bottom(&self, body: &'tcx Body<'tcx>) -> Self::State;
+    fn bottom(&self, body: &Body<'tcx>) -> Self::State;
 
-    fn entry_state(&self, body: &'tcx Body<'tcx>) -> Self::State {
+    fn entry_state(&self, body: &Body<'tcx>) -> Self::State {
         self.bottom(body)
     }
 
@@ -41,7 +42,7 @@ pub trait ForwardSemantics<'tcx> {
         tcx: TyCtxt<'tcx>,
         st: &mut Self::State,
         stmt: &Statement<'tcx>,
-        local_decls: &'tcx LocalDecls<'tcx>,
+        local_decls: &LocalDecls<'tcx>,
     );
 
     fn transfer_terminator(
@@ -49,14 +50,14 @@ pub trait ForwardSemantics<'tcx> {
         _tcx: TyCtxt<'tcx>,
         _st: &mut Self::State,
         _term: &Terminator<'tcx>,
-        _local_decls: &'tcx LocalDecls<'tcx>,
+        _local_decls: &LocalDecls<'tcx>,
     ) {
     }
 
     fn transfer_block(
         &self,
         tcx: TyCtxt<'tcx>,
-        body: &'tcx Body<'tcx>,
+        body: &Body<'tcx>,
         bb: BasicBlock,
         in_state: &Self::State,
     ) -> Self::State {
@@ -74,7 +75,7 @@ pub trait ForwardSemantics<'tcx> {
     fn refine_edge(
         &self,
         _tcx: TyCtxt<'tcx>,
-        _body: &'tcx Body<'tcx>,
+        _body: &Body<'tcx>,
         _pred: BasicBlock,
         _succ: BasicBlock,
         in_state: &Self::State,
@@ -85,7 +86,8 @@ pub trait ForwardSemantics<'tcx> {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct PerPathState<S> {
-    states: Vec<S>,
+    in_states: Vec<S>,
+    out_states: Vec<S>,
     iterations: Vec<u32>,
     visited: Vec<bool>,
     is_abstract: bool,
@@ -100,7 +102,7 @@ struct PathWorkItem {
 
 pub fn run_path_sensitive_forward_analysis_with_config<'tcx, A>(
     tcx: TyCtxt<'tcx>,
-    body: &'tcx Body<'tcx>,
+    body: &Body<'tcx>,
     cfg: &Cfg,
     semantics: &A,
     config: PathForwardAnalysisConfig,
@@ -125,7 +127,8 @@ where
     path_map.insert(
         0,
         PerPathState {
-            states: vec![bottom.clone(); n],
+            in_states: vec![bottom.clone(); n],
+            out_states: vec![bottom.clone(); n],
             iterations: vec![0; n],
             visited: vec![false; n],
             is_abstract: false,
@@ -138,7 +141,7 @@ where
             if current.is_abstract {
                 let mut merged = bottom.clone();
                 for pred in &cfg.pred[item.bb.index()] {
-                    let pred_state = &current.states[pred.index()];
+                    let pred_state = &current.out_states[pred.index()];
                     if let Some(refined) =
                         semantics.refine_edge(tcx, body, *pred, item.bb, pred_state)
                     {
@@ -150,7 +153,7 @@ where
                 match item.pred {
                     None => entry.clone(),
                     Some(pred) => {
-                        let pred_state = &current.states[pred.index()];
+                        let pred_state = &current.out_states[pred.index()];
                         let Some(refined) =
                             semantics.refine_edge(tcx, body, pred, item.bb, pred_state)
                         else {
@@ -164,7 +167,7 @@ where
         };
 
         let raw_out = semantics.transfer_block(tcx, body, item.bb, &in_state);
-        let path_prev = path_map.get(&item.path_id).unwrap().states[item.bb.index()].clone();
+        let path_prev = path_map.get(&item.path_id).unwrap().out_states[item.bb.index()].clone();
         let first_visit = !path_map.get(&item.path_id).unwrap().visited[item.bb.index()];
         let do_widen = config.widen_after_iterations.is_some_and(|limit| {
             path_map.get(&item.path_id).unwrap().iterations[item.bb.index()] >= limit
@@ -178,7 +181,8 @@ where
 
         {
             let current = path_map.get_mut(&item.path_id).unwrap();
-            current.states[item.bb.index()] = real_out;
+            current.in_states[item.bb.index()] = in_state;
+            current.out_states[item.bb.index()] = real_out;
             current.iterations[item.bb.index()] += 1;
             current.visited[item.bb.index()] = true;
         }
@@ -223,17 +227,58 @@ where
         }
     }
 
-    let mut final_states = Vec::with_capacity(n);
+    let mut final_in_states = Vec::with_capacity(n);
+    let mut final_out_states = Vec::with_capacity(n);
     for bb in body.basic_blocks.indices() {
-        let mut merged = bottom.clone();
+        let mut merged_in = bottom.clone();
+        let mut merged_out = bottom.clone();
         for path in path_map.values() {
-            merged = A::State::join(&merged, &path.states[bb.index()]);
+            merged_in = A::State::join(&merged_in, &path.in_states[bb.index()]);
+            merged_out = A::State::join(&merged_out, &path.out_states[bb.index()]);
         }
-        final_states.push(merged);
+        final_in_states.push(merged_in);
+        final_out_states.push(merged_out);
     }
 
     let _ = reached_max_paths;
     PathForwardAnalysisResult {
-        states: final_states,
+        in_states: final_in_states,
+        out_states: final_out_states,
     }
+}
+
+pub fn replay_state_before_location<'tcx, S>(
+    tcx: TyCtxt<'tcx>,
+    body: &Body<'tcx>,
+    in_state: &S,
+    location: Location,
+    mut transfer_stmt: impl FnMut(TyCtxt<'tcx>, &mut S, &Statement<'tcx>, &LocalDecls<'tcx>),
+) -> Option<S>
+where
+    S: Clone,
+{
+    let bbdata = &body.basic_blocks[location.block];
+    if location.statement_index > bbdata.statements.len() {
+        return None;
+    }
+
+    let mut state = in_state.clone();
+    for stmt in bbdata.statements.iter().take(location.statement_index) {
+        transfer_stmt(tcx, &mut state, stmt, &body.local_decls);
+    }
+    Some(state)
+}
+
+pub fn state_before_location_from_result<'tcx, S>(
+    tcx: TyCtxt<'tcx>,
+    body: &Body<'tcx>,
+    result: &PathForwardAnalysisResult<S>,
+    location: Location,
+    transfer_stmt: impl FnMut(TyCtxt<'tcx>, &mut S, &Statement<'tcx>, &LocalDecls<'tcx>),
+) -> Option<S>
+where
+    S: Clone,
+{
+    let in_state = result.in_states.get(location.block.index())?;
+    replay_state_before_location(tcx, body, in_state, location, transfer_stmt)
 }

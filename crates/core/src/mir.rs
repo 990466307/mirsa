@@ -5,6 +5,8 @@ use rustc_middle::ty::TyCtxt;
 use rustc_middle::ty::TyKind;
 use std::collections::HashSet;
 
+const MAX_PRECOLLECT_ARRAY_ELEMENTS: u64 = 32;
+
 pub fn get_optimized_mir<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) -> &'tcx Body<'tcx> {
     tcx.optimized_mir(def_id)
 }
@@ -40,11 +42,15 @@ fn collect_immediate_projections<'tcx>(
         }
         TyKind::Array(_, len) => {
             if let Some(len) = len.try_to_target_usize(tcx) {
+                let len = len as u64;
+                if len > MAX_PRECOLLECT_ARRAY_ELEMENTS {
+                    return;
+                }
                 for idx in 0..len {
                     let proj = base.project_deeper(
                         &[ProjectionElem::ConstantIndex {
-                            offset: idx as u64,
-                            min_length: len as u64,
+                            offset: idx,
+                            min_length: len,
                             from_end: false,
                         }],
                         tcx,
@@ -70,7 +76,7 @@ impl<'tcx> Visitor<'tcx> for PlaceCollector<'tcx> {
     }
 }
 
-pub fn collect_body_places<'tcx>(tcx: TyCtxt<'tcx>, body: &'tcx Body<'tcx>) -> Vec<Place<'tcx>> {
+pub fn collect_body_places<'tcx>(tcx: TyCtxt<'tcx>, body: &Body<'tcx>) -> Vec<Place<'tcx>> {
     let mut places: HashSet<Place<'tcx>> = HashSet::new();
 
     for (local, _decl) in body.local_decls.iter_enumerated() {
@@ -85,7 +91,7 @@ pub fn collect_body_places<'tcx>(tcx: TyCtxt<'tcx>, body: &'tcx Body<'tcx>) -> V
     collector.places.into_iter().collect()
 }
 
-pub fn collect_ref_places<'tcx>(tcx: TyCtxt<'tcx>, body: &'tcx Body<'tcx>) -> Vec<Place<'tcx>> {
+pub fn collect_ref_places<'tcx>(tcx: TyCtxt<'tcx>, body: &Body<'tcx>) -> Vec<Place<'tcx>> {
     let _ = tcx;
     body.local_decls
         .iter_enumerated()
@@ -99,7 +105,7 @@ pub fn collect_ref_places<'tcx>(tcx: TyCtxt<'tcx>, body: &'tcx Body<'tcx>) -> Ve
         .collect()
 }
 
-pub fn collect_ptr_places<'tcx>(tcx: TyCtxt<'tcx>, body: &'tcx Body<'tcx>) -> Vec<Place<'tcx>> {
+pub fn collect_ptr_places<'tcx>(tcx: TyCtxt<'tcx>, body: &Body<'tcx>) -> Vec<Place<'tcx>> {
     collect_body_places(tcx, body)
         .into_iter()
         .filter(|place| {

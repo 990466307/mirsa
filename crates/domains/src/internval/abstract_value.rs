@@ -128,9 +128,7 @@ pub fn mul(a: &Internval, b: &Internval) -> Internval {
 }
 
 pub fn div(a: &Internval, b: &Internval) -> Internval {
-    // 检查除数是否包含0
     if b.low <= 0 && b.high >= 0 {
-        println!("Warning: Division by an Internval containing zero.");
         return Internval::top();
     }
 
