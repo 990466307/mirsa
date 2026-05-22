@@ -1,6 +1,6 @@
+use crate::framework::eq_domain::{EqDomain, join_eq};
 use crate::framework::forward::DomainState;
 use crate::framework::printer::StateEntries;
-use crate::framework::eq_domain::{EqDomain, join_eq};
 use rustc_middle::mir::Place;
 use rustc_middle::ty::{Ty, TyCtxt, TyKind};
 use std::collections::HashMap;
@@ -163,7 +163,10 @@ impl<'tcx> StateEntries<'tcx> for InternvalState<'tcx> {
 
 impl<'tcx> InternvalState<'tcx> {
     pub fn get_internval(&self, place: &Place<'tcx>) -> Internval {
-        self.internval.get(place).copied().unwrap_or_else(Internval::empty)
+        self.internval
+            .get(place)
+            .copied()
+            .unwrap_or_else(Internval::empty)
     }
     pub fn set_internval(&mut self, place: Place<'tcx>, internval: Internval) {
         self.internval.insert(place, internval);
@@ -180,7 +183,6 @@ impl<'tcx> InternvalState<'tcx> {
     pub fn clear_slice_meta(&mut self, place: &Place<'tcx>) {
         self.slice_meta.remove(place);
     }
-
 }
 
 pub fn join_state<'tcx>(

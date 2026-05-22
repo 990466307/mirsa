@@ -2,81 +2,13 @@ use rustc_middle::mir::{
     Body, Local, Operand, Place, Rvalue, StatementKind, Terminator, TerminatorKind,
 };
 use rustc_middle::ty::{Ty, TyCtxt, TyKind};
-use rustc_span::Span;
 
 use crate::internval::abstract_value::sub;
 use crate::internval::{Internval, InternvalState};
 
-use super::super::transfer::eval_operand;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum CheckLevel {
-    Safe,
-    Possible,
-    Definite,
-}
-
-impl CheckLevel {
-    pub(crate) fn combine(self, other: CheckLevel) -> CheckLevel {
-        if self == CheckLevel::Definite || other == CheckLevel::Definite {
-            CheckLevel::Definite
-        } else if self == CheckLevel::Possible || other == CheckLevel::Possible {
-            CheckLevel::Possible
-        } else {
-            CheckLevel::Safe
-        }
-    }
-
-    pub(crate) fn oob_code(self) -> &'static str {
-        match self {
-            CheckLevel::Definite => "internval/definite-oob",
-            CheckLevel::Possible => "internval/possible-oob",
-            CheckLevel::Safe => unreachable!(),
-        }
-    }
-}
-
-pub(crate) fn call_path<'tcx>(
-    tcx: TyCtxt<'tcx>,
-    body: &Body<'tcx>,
-    term: &Terminator<'tcx>,
-) -> Option<String> {
-    let TerminatorKind::Call { func, .. } = &term.kind else {
-        return None;
-    };
-    let TyKind::FnDef(def_id, _) = func.ty(&body.local_decls, tcx).kind() else {
-        return None;
-    };
-    Some(tcx.def_path_str(*def_id))
-}
-
-pub(crate) fn format_callsite<'tcx>(tcx: TyCtxt<'tcx>, span: Span) -> (String, String) {
-    let sm = tcx.sess.source_map();
-    let loc = sm.span_to_diagnostic_string(span);
-    let snippet = sm
-        .span_to_snippet(span)
-        .unwrap_or_else(|_| "unsafe call".to_string())
-        .replace('\n', " ");
-    (loc, snippet)
-}
-
-pub(crate) fn emit_warning<'tcx>(
-    tcx: TyCtxt<'tcx>,
-    span: Span,
-    code: &str,
-    message: &str,
-    notes: &[String],
-) {
-    let (loc, snippet) = format_callsite(tcx, span);
-    println!("warning[{code}]: {message}");
-    println!("  --> {loc}");
-    println!("   |");
-    println!("   | {snippet}");
-    println!("   | ^ unsafe call here");
-    for note in notes {
-        println!("   = {note}");
-    }
-}
+use crate::contracts::finding::Level;
+use crate::contracts::matcher::call_path;
+use crate::internval::transfer::eval_operand;
 
 pub(crate) fn eval_call_arg<'tcx>(
     tcx: TyCtxt<'tcx>,
@@ -171,10 +103,7 @@ fn local_from_operand(op: &Operand<'_>) -> Option<Local> {
     }
 }
 
-fn find_local_assignment<'a, 'tcx>(
-    body: &'a Body<'tcx>,
-    local: Local,
-) -> Option<&'a Rvalue<'tcx>> {
+fn find_local_assignment<'a, 'tcx>(body: &'a Body<'tcx>, local: Local) -> Option<&'a Rvalue<'tcx>> {
     for bbdata in body.basic_blocks.iter() {
         for stmt in &bbdata.statements {
             let StatementKind::Assign(assign) = &stmt.kind else {
@@ -189,10 +118,7 @@ fn find_local_assignment<'a, 'tcx>(
     None
 }
 
-fn find_local_call<'a, 'tcx>(
-    body: &'a Body<'tcx>,
-    local: Local,
-) -> Option<&'a Terminator<'tcx>> {
+fn find_local_call<'a, 'tcx>(body: &'a Body<'tcx>, local: Local) -> Option<&'a Terminator<'tcx>> {
     for bbdata in body.basic_blocks.iter() {
         let Some(term) = bbdata.terminator.as_ref() else {
             continue;
@@ -272,34 +198,34 @@ pub(crate) fn pointer_len_from_operand<'tcx>(
     pointer_len_from_local(tcx, body, state, local, depth)
 }
 
-pub(crate) fn check_lt(index: Internval, len: Internval) -> CheckLevel {
+pub(crate) fn check_lt(index: Internval, len: Internval) -> Level {
     if index.is_empty() || len.is_empty() {
-        return CheckLevel::Safe;
+        return Level::Safe;
     }
     if index.high < 0 {
-        return CheckLevel::Definite;
+        return Level::Definite;
     }
     if index.low >= 0 && index.high < len.low {
-        return CheckLevel::Safe;
+        return Level::Safe;
     }
     if index.low >= len.high {
-        return CheckLevel::Definite;
+        return Level::Definite;
     }
-    CheckLevel::Possible
+    Level::Possible
 }
 
-pub(crate) fn check_le(index: Internval, len: Internval) -> CheckLevel {
+pub(crate) fn check_le(index: Internval, len: Internval) -> Level {
     if index.is_empty() || len.is_empty() {
-        return CheckLevel::Safe;
+        return Level::Safe;
     }
     if index.high < 0 {
-        return CheckLevel::Definite;
+        return Level::Definite;
     }
     if index.low >= 0 && index.high <= len.low {
-        return CheckLevel::Safe;
+        return Level::Safe;
     }
     if index.low > len.high {
-        return CheckLevel::Definite;
+        return Level::Definite;
     }
-    CheckLevel::Possible
+    Level::Possible
 }

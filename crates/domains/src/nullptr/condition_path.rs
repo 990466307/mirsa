@@ -2,6 +2,7 @@ use rustc_middle::mir::*;
 use rustc_middle::ty::{Ty, TyCtxt, TyKind};
 
 use super::abstract_value::NullPtr;
+use super::access_path::AccessPath;
 use super::state::{NullPtrState, get_tracked_value, is_tracked};
 use super::transfer::const_nullness;
 
@@ -14,39 +15,24 @@ fn meet_nullptr(current: NullPtr, wanted: NullPtr) -> Option<NullPtr> {
     }
 }
 
-fn refine_tracked_place<'tcx>(
+fn refine_tracked_fact<'tcx>(
     st: &mut NullPtrState<'tcx>,
-    place: Place<'tcx>,
+    path: AccessPath,
     refined: NullPtr,
 ) -> bool {
-    if st.refs.contains_key(&place) {
-        st.set_ref(place, refined);
-    } else if st.pointers.contains_key(&place) {
-        st.set_nullptr(place, refined);
-    } else {
-        return false;
-    }
-
-    let mut all_places: Vec<Place<'tcx>> = st.pointers.keys().copied().collect();
-    all_places.extend(st.refs.keys().copied());
-    for other in all_places {
-        if other == place || !st.eq.equiv_readonly(place, other) {
+    st.set_path(path.clone(), refined);
+    let all_paths: Vec<AccessPath> = st.fact_paths().collect();
+    for other in all_paths {
+        if other == path || !st.eq.equiv_readonly(path.clone(), other.clone()) {
             continue;
         }
-        let other_current = if st.refs.contains_key(&other) {
-            st.get_ref(&other)
-        } else {
-            st.get_nullptr(&other)
-        };
+        let other_current = st.get_path(&other);
         let Some(other_refined) = meet_nullptr(other_current, refined) else {
+            st.debug(format_args!("eq-kill {other}"));
             st.eq.kill(other);
             continue;
         };
-        if st.refs.contains_key(&other) {
-            st.set_ref(other, other_refined);
-        } else {
-            st.set_nullptr(other, other_refined);
-        }
+        st.set_path(other, other_refined);
     }
     true
 }
@@ -64,7 +50,10 @@ fn refine_place_to<'tcx>(
     let Some(refined) = meet_nullptr(current, wanted) else {
         return false;
     };
-    refine_tracked_place(st, place, refined)
+    let Some(path) = st.access_path_for_place(place) else {
+        return false;
+    };
+    refine_tracked_fact(st, path, refined)
 }
 
 fn find_last_cmp_assign<'tcx>(
@@ -160,9 +149,7 @@ fn operand_nullness<'tcx>(
                 None
             }
         }
-        Operand::Constant(c) => {
-            const_nullness(tcx, c)
-        }
+        Operand::Constant(c) => const_nullness(tcx, c),
     }
 }
 
@@ -220,7 +207,12 @@ fn refine_cmp<'tcx>(
             let left_ty = pl.ty(local_decls, tcx).ty;
             let right_ty = pr.ty(local_decls, tcx).ty;
             if is_tracked(left_ty) && is_tracked(right_ty) {
-                st.eq.union(*pl, *pr);
+                if let (Some(left_path), Some(right_path)) =
+                    (st.access_path_for_place(*pl), st.access_path_for_place(*pr))
+                {
+                    st.debug(format_args!("eq {left_path} == {right_path}"));
+                    st.eq.union(left_path, right_path);
+                }
             }
         }
     }

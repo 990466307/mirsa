@@ -1,32 +1,29 @@
 use rustc_middle::mir::{Body, Terminator, TerminatorKind};
 use rustc_middle::ty::TyCtxt;
 
+use crate::contracts::finding::{Finding, Level};
 use crate::internval::{Internval, InternvalState};
 
-use super::shared::{CheckLevel, check_le, emit_warning, eval_call_arg, pointer_len_from_operand};
+use super::shared::{check_le, eval_call_arg, pointer_len_from_operand};
 
-pub(crate) fn matches_path(path: &str) -> bool {
-    path.ends_with("::copy_nonoverlapping")
-}
-
-fn check_side(count: Internval, available: Option<Internval>) -> CheckLevel {
+fn check_side(count: Internval, available: Option<Internval>) -> Level {
     let Some(available) = available else {
-        return CheckLevel::Safe;
+        return Level::Safe;
     };
     check_le(count, available)
 }
 
-pub(crate) fn emit<'tcx>(
+pub(crate) fn check<'tcx>(
     tcx: TyCtxt<'tcx>,
     body: &Body<'tcx>,
     term: &Terminator<'tcx>,
     state: &InternvalState<'tcx>,
-) {
+) -> Option<Finding> {
     let TerminatorKind::Call { args, .. } = &term.kind else {
-        return;
+        return None;
     };
     if args.len() < 3 {
-        return;
+        return None;
     }
 
     let src_len = pointer_len_from_operand(tcx, body, state, &args[0].node, 8);
@@ -35,32 +32,19 @@ pub(crate) fn emit<'tcx>(
     let src_level = check_side(count, src_len);
     let dst_level = check_side(count, dst_len);
     let level = src_level.combine(dst_level);
-    if level == CheckLevel::Safe {
-        return;
-    }
-
-    let code = level.oob_code();
-    let message = match level {
-        CheckLevel::Definite => {
-            "calling `ptr::copy_nonoverlapping` with a definitely out-of-bounds range"
-        }
-        CheckLevel::Possible => {
-            "calling `ptr::copy_nonoverlapping` with a range that may exceed the source or destination object"
-        }
-        CheckLevel::Safe => unreachable!(),
-    };
-
     let src_note = src_len
         .map(|len| format!("src_len = {len}"))
         .unwrap_or_else(|| "src_len = unknown".to_string());
     let dst_note = dst_len
         .map(|len| format!("dst_len = {len}"))
         .unwrap_or_else(|| "dst_len = unknown".to_string());
-    emit_warning(
-        tcx,
+    Finding::for_level(
+        level,
         term.source_info.span,
-        code,
-        message,
-        &[format!("count = {count}"), src_note, dst_note],
-    );
+        "internval/definite-oob",
+        "internval/possible-oob",
+        "calling `ptr::copy_nonoverlapping` with a definitely out-of-bounds range",
+        "calling `ptr::copy_nonoverlapping` with a range that may exceed the source or destination object",
+        vec![format!("count = {count}"), src_note, dst_note],
+    )
 }

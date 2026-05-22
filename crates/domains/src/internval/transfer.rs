@@ -558,8 +558,8 @@ pub fn transfer_terminator<'tcx>(
     let Some(index) = singleton_nonnegative(index) else {
         return;
     };
-    let Some(len) =
-        operand_slice_or_array_len(tcx, local_decls, st, &args[0].node).and_then(singleton_nonnegative)
+    let Some(len) = operand_slice_or_array_len(tcx, local_decls, st, &args[0].node)
+        .and_then(singleton_nonnegative)
     else {
         return;
     };
@@ -572,7 +572,10 @@ pub fn transfer_terminator<'tcx>(
         if !st.eq.equiv_readonly(receiver_place, candidate) {
             continue;
         }
-        if matches!(candidate.ty(local_decls, tcx).ty.kind(), TyKind::Array(_, _)) {
+        if matches!(
+            candidate.ty(local_decls, tcx).ty.kind(),
+            TyKind::Array(_, _)
+        ) {
             source_place = candidate;
             source_is_ref = false;
             break;
@@ -605,13 +608,11 @@ pub fn transfer_terminator<'tcx>(
         )
     } else {
         source_place.project_deeper(
-            &[
-                ProjectionElem::ConstantIndex {
-                    offset: index,
-                    min_length: len,
-                    from_end: false,
-                },
-            ],
+            &[ProjectionElem::ConstantIndex {
+                offset: index,
+                min_length: len,
+                from_end: false,
+            }],
             tcx,
         )
     };

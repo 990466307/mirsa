@@ -1,7 +1,9 @@
 use std::collections::{HashMap, VecDeque};
 
 use core::cfg::Cfg;
-use rustc_middle::mir::{BasicBlock, Body, LocalDecls, Location, START_BLOCK, Statement, Terminator};
+use rustc_middle::mir::{
+    BasicBlock, Body, LocalDecls, Location, START_BLOCK, Statement, Terminator,
+};
 use rustc_middle::ty::TyCtxt;
 
 #[derive(Clone, Copy, Debug)]

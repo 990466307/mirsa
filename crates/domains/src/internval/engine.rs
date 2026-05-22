@@ -1,7 +1,7 @@
 use super::condition_path::refine_edge;
 use super::state::InternvalState;
 use super::transfer::{transfer_stmt, transfer_terminator};
-use super::warnings::{emit_internval_warnings, is_supported_unsafe_call};
+use crate::contracts::internval::{emit_internval_warnings, is_supported_unsafe_call};
 use crate::framework::config::load_engine_config;
 use crate::framework::forward::{
     ForwardSemantics, PathForwardAnalysisConfig, PathForwardAnalysisResult,
@@ -13,7 +13,9 @@ use crate::framework::printer::{
 };
 use core::cfg::Cfg;
 use rustc_hir::def_id::DefId;
-use rustc_middle::mir::{BasicBlock, Body, LocalDecls, Place, Statement, Terminator, TerminatorKind};
+use rustc_middle::mir::{
+    BasicBlock, Body, LocalDecls, Place, Statement, Terminator, TerminatorKind,
+};
 use rustc_middle::ty::TyCtxt;
 use std::path::Path;
 
@@ -60,10 +62,7 @@ impl<'a, 'tcx> ForwardSemantics<'tcx> for InternvalSemantics<'a, 'tcx> {
     }
 }
 
-fn visible_entries<'tcx>(
-    body: &Body<'tcx>,
-    state: &InternvalState<'tcx>,
-) -> Vec<(String, String)> {
+fn visible_entries<'tcx>(body: &Body<'tcx>, state: &InternvalState<'tcx>) -> Vec<(String, String)> {
     let local_names = collect_local_names(body);
     let mut entries: Vec<(String, String)> = state
         .entries()

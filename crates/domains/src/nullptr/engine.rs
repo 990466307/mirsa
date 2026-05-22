@@ -17,18 +17,18 @@ use crate::framework::printer::{
 use super::condition_path::refine_edge;
 use super::state::NullPtrState;
 use super::transfer::{transfer_stmt, transfer_terminator};
-use super::warnings::{emit_nonnull_call_warnings, is_supported_unsafe_call};
+use crate::contracts::nullptr::{emit_nonnull_call_warnings, is_supported_unsafe_call};
 
 struct NullPtrSemantics<'a, 'tcx> {
     places: &'a [Place<'tcx>],
-    refs: &'a [Place<'tcx>],
+    debug: bool,
 }
 
 impl<'a, 'tcx> ForwardSemantics<'tcx> for NullPtrSemantics<'a, 'tcx> {
     type State = NullPtrState<'tcx>;
 
     fn bottom(&self, body: &Body<'tcx>) -> Self::State {
-        NullPtrState::new_bot_state(self.places, self.refs, body.arg_count)
+        NullPtrState::new_bot_state(self.places, body.arg_count, self.debug)
     }
 
     fn transfer_stmt(
@@ -63,10 +63,7 @@ impl<'a, 'tcx> ForwardSemantics<'tcx> for NullPtrSemantics<'a, 'tcx> {
     }
 }
 
-fn visible_entries<'tcx>(
-    body: &Body<'tcx>,
-    state: &NullPtrState<'tcx>,
-) -> Vec<(String, String)> {
+fn visible_entries<'tcx>(body: &Body<'tcx>, state: &NullPtrState<'tcx>) -> Vec<(String, String)> {
     let local_names = collect_local_names(body);
     let mut entries: Vec<(String, String)> = state
         .entries()
@@ -132,13 +129,10 @@ pub fn analyze_nullptr<'tcx>(
     body: &Body<'tcx>,
     cfg: &Cfg,
     places: &[Place<'tcx>],
-    ref_places: &[Place<'tcx>],
+    debug: bool,
     config: PathForwardAnalysisConfig,
 ) -> PathForwardAnalysisResult<NullPtrState<'tcx>> {
-    let semantics = NullPtrSemantics {
-        places,
-        refs: ref_places,
-    };
+    let semantics = NullPtrSemantics { places, debug };
     run_path_sensitive_analysis(tcx, body, cfg, &semantics, config)
 }
 
@@ -157,20 +151,21 @@ pub fn run_nullptr<'tcx>(
     body: &Body<'tcx>,
     cfg: &Cfg,
     places: &Vec<Place<'tcx>>,
-    ref_places: &Vec<Place<'tcx>>,
+    _ref_places: &Vec<Place<'tcx>>,
 ) {
     if !has_supported_unsafe_calls(tcx, body) {
         return;
     }
     let config_path = Path::new("crates/domains/src/nullptr/nullptr.toml");
     let config = load_engine_config(config_path);
+    let debug = load_bool_config(config_path, "debug", false);
     let warn_on_maybe = load_bool_config(config_path, "warn_on_maybe", false);
     let result = analyze_nullptr(
         tcx,
         body,
         cfg,
         places,
-        ref_places,
+        debug,
         PathForwardAnalysisConfig {
             max_paths: config.max_paths,
             widen_after_iterations: config.max_iterations,
