@@ -1,11 +1,12 @@
 [package]
-name = "driver"
+name = "mirsa-driver"
 version = "0.1.0"
 edition = "2024"
+publish = false
 
 [dependencies]
-core = { path = "../core" }
-domains = {path = "../domains" }
+mirsa_core = { package = "mirsa-core", path = "../core", version = "0.2.0" }
+mirsa_domains = { package = "mirsa-domains", path = "../domains", version = "0.2.0" }
 
 [package.metadata.rust-analyzer]
 rustc_private = true

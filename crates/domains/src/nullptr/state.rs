@@ -2,7 +2,6 @@ use crate::framework::eq_domain::{EqDomain, join_eq};
 use crate::framework::forward::DomainState;
 use crate::framework::printer::StateEntries;
 use rustc_middle::mir::Place;
-use rustc_middle::ty::{Ty, TyKind};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
@@ -235,37 +234,6 @@ impl<'tcx> NullPtrState<'tcx> {
 
     fn is_bottom_like(&self) -> bool {
         self.facts.values().all(|value| *value == NullPtr::Bot)
-    }
-}
-
-pub(crate) fn is_ptr_like(ty: Ty<'_>) -> bool {
-    matches!(ty.kind(), TyKind::RawPtr(_, _) | TyKind::FnPtr(..))
-}
-
-pub(crate) fn is_ref_like(ty: Ty<'_>) -> bool {
-    matches!(ty.kind(), TyKind::Ref(_, _, _))
-}
-
-pub(crate) fn is_tracked(ty: Ty<'_>) -> bool {
-    is_ptr_like(ty) || is_ref_like(ty)
-}
-
-pub(crate) fn get_tracked_value<'tcx>(
-    st: &NullPtrState<'tcx>,
-    place: Place<'tcx>,
-    ty: Ty<'tcx>,
-) -> NullPtr {
-    if !is_tracked(ty) {
-        return NullPtr::Bot;
-    }
-    let Some(path) = st.access_path_for_place(place) else {
-        return NullPtr::Bot;
-    };
-    let value = st.value_or_maybe(&path);
-    if value == NullPtr::Bot && is_ref_like(ty) {
-        NullPtr::NonNull
-    } else {
-        value
     }
 }
 

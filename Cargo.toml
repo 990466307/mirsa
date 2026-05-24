@@ -8,8 +8,15 @@ resolver = "2"
 
 [package]
 name = "mirsa"
-version = "0.1.0"
-edition = "2021"
+version = "0.2.0"
+edition = "2024"
 
 description = "rust mir static analysis"
 license = "MIT"
+
+[dependencies]
+mirsa_core = { package = "mirsa-core", path = "crates/core", version = "0.2.0" }
+mirsa_domains = { package = "mirsa-domains", path = "crates/domains", version = "0.2.0" }
+
+[package.metadata.rust-analyzer]
+rustc_private = true

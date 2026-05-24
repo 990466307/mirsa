@@ -47,15 +47,6 @@ impl ContractCall {
     }
 }
 
-pub(crate) fn call_path<'tcx>(
-    tcx: TyCtxt<'tcx>,
-    body: &Body<'tcx>,
-    term: &Terminator<'tcx>,
-) -> Option<String> {
-    let def_id = call_def_id(tcx, body, term)?;
-    Some(tcx.def_path_str(def_id))
-}
-
 fn call_def_id<'tcx>(
     tcx: TyCtxt<'tcx>,
     body: &Body<'tcx>,

@@ -1,6 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 
-use core::cfg::Cfg;
+use mirsa_core::cfg::Cfg;
 use rustc_middle::mir::{
     BasicBlock, Body, LocalDecls, Location, START_BLOCK, Statement, Terminator,
 };

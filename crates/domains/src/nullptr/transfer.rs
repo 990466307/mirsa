@@ -3,7 +3,38 @@ use rustc_middle::ty::{Ty, TyCtxt, TyKind, TypingEnv};
 
 use super::abstract_value::NullPtr;
 use super::access_path::AccessPath;
-use super::state::{NullPtrState, get_tracked_value, is_ptr_like, is_tracked};
+use super::state::NullPtrState;
+
+pub(crate) fn is_ptr_like(ty: Ty<'_>) -> bool {
+    matches!(ty.kind(), TyKind::RawPtr(_, _) | TyKind::FnPtr(..))
+}
+
+fn is_ref_like(ty: Ty<'_>) -> bool {
+    matches!(ty.kind(), TyKind::Ref(_, _, _))
+}
+
+pub(crate) fn is_tracked(ty: Ty<'_>) -> bool {
+    is_ptr_like(ty) || is_ref_like(ty)
+}
+
+pub(crate) fn get_tracked_value<'tcx>(
+    st: &NullPtrState<'tcx>,
+    place: Place<'tcx>,
+    ty: Ty<'tcx>,
+) -> NullPtr {
+    if !is_tracked(ty) {
+        return NullPtr::Bot;
+    }
+    let Some(path) = st.access_path_for_place(place) else {
+        return NullPtr::Bot;
+    };
+    let value = st.value_or_maybe(&path);
+    if value == NullPtr::Bot && is_ref_like(ty) {
+        NullPtr::NonNull
+    } else {
+        value
+    }
+}
 
 fn unknown_value_for_type(ty: Ty<'_>) -> NullPtr {
     match ty.kind() {

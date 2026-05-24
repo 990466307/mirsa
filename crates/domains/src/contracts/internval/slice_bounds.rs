@@ -4,8 +4,9 @@ use rustc_middle::ty::TyCtxt;
 use crate::contracts::finding::Finding;
 use crate::contracts::matcher::ContractCall;
 use crate::internval::InternvalState;
+use crate::internval::transfer::operand_len;
 
-use super::shared::{check_le, check_lt, eval_call_arg, operand_len};
+use super::shared::{check_le, check_lt, eval_call_arg};
 
 pub(crate) fn check<'tcx>(
     tcx: TyCtxt<'tcx>,
@@ -23,7 +24,7 @@ pub(crate) fn check<'tcx>(
 
     let receiver = &args[0].node;
     let index = eval_call_arg(tcx, body, state, &args[1].node);
-    let len = operand_len(tcx, body, state, receiver);
+    let len = operand_len(tcx, &body.local_decls, state, receiver);
 
     let (level, property) = match call {
         ContractCall::SliceSplitAtUnchecked | ContractCall::SliceSplitAtMutUnchecked => {

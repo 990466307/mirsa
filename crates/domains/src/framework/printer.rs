@@ -2,7 +2,7 @@ use crate::framework::forward::{
     ForwardSemantics, PathForwardAnalysisConfig, PathForwardAnalysisResult,
     run_path_sensitive_forward_analysis_with_config,
 };
-use core::cfg::Cfg;
+use mirsa_core::cfg::Cfg;
 use rustc_hir::def_id::DefId;
 use rustc_middle::mir::{Body, Local, Place, ProjectionElem, TerminatorKind, VarDebugInfoContents};
 use rustc_middle::ty::TyCtxt;

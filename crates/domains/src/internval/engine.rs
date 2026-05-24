@@ -11,7 +11,7 @@ use crate::framework::printer::{
     StateEntries, collect_local_names, format_place_label, print_function_header,
     run_path_sensitive_analysis,
 };
-use core::cfg::Cfg;
+use mirsa_core::cfg::Cfg;
 use rustc_hir::def_id::DefId;
 use rustc_middle::mir::{
     BasicBlock, Body, LocalDecls, Place, Statement, Terminator, TerminatorKind,

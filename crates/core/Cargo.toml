@@ -1,7 +1,9 @@
 [package]
-name = "core"
-version = "0.1.0"
+name = "mirsa-core"
+version = "0.2.0"
 edition = "2024"
+description = "Core MIR utilities for mirsa"
+license = "MIT"
 
 [dependencies]
 

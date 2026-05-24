@@ -3,8 +3,8 @@ use rustc_middle::ty::{Ty, TyCtxt, TyKind};
 
 use super::abstract_value::NullPtr;
 use super::access_path::AccessPath;
-use super::state::{NullPtrState, get_tracked_value, is_tracked};
-use super::transfer::const_nullness;
+use super::state::NullPtrState;
+use super::transfer::{const_nullness, get_tracked_value, is_tracked};
 
 fn meet_nullptr(current: NullPtr, wanted: NullPtr) -> Option<NullPtr> {
     match (current, wanted) {

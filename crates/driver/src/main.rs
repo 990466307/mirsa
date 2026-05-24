@@ -5,7 +5,7 @@ extern crate rustc_hir;
 extern crate rustc_interface;
 extern crate rustc_middle;
 
-use core::mir::collect_body_places;
+use mirsa_core::mir::collect_body_places;
 
 use rustc_driver::{Callbacks, Compilation, run_compiler};
 use rustc_middle::ty::TyCtxt;
@@ -54,18 +54,18 @@ impl Callbacks for MirCallbacks {
         _compiler: &rustc_interface::interface::Compiler,
         tcx: TyCtxt<'_>,
     ) -> Compilation {
-        let fns = core::collect::collect_local_fns(tcx);
+        let fns = mirsa_core::collect::collect_local_fns(tcx);
 
         for def_id in fns {
-            let body = core::mir::get_optimized_mir(tcx, def_id);
-            let cfg = core::cfg::build_cfg(body);
+            let body = mirsa_core::mir::get_optimized_mir(tcx, def_id);
+            let cfg = mirsa_core::cfg::build_cfg(body);
             let places = collect_body_places(tcx, body);
-            let ptr_places = core::mir::collect_ptr_places(tcx, body);
-            let ref_places = core::mir::collect_ref_places(tcx, body);
+            let ptr_places = mirsa_core::mir::collect_ptr_places(tcx, body);
+            let ref_places = mirsa_core::mir::collect_ref_places(tcx, body);
             match self.domain {
                 DomainSelection::All => {
-                    domains::internval::run_internval(tcx, def_id, body, &cfg, &places);
-                    domains::nullptr::run_nullptr(
+                    mirsa_domains::internval::run_internval(tcx, def_id, body, &cfg, &places);
+                    mirsa_domains::nullptr::run_nullptr(
                         tcx,
                         def_id,
                         body,
@@ -75,10 +75,10 @@ impl Callbacks for MirCallbacks {
                     );
                 }
                 DomainSelection::Internval => {
-                    domains::internval::run_internval(tcx, def_id, body, &cfg, &places);
+                    mirsa_domains::internval::run_internval(tcx, def_id, body, &cfg, &places);
                 }
                 DomainSelection::Nullptr => {
-                    domains::nullptr::run_nullptr(
+                    mirsa_domains::nullptr::run_nullptr(
                         tcx,
                         def_id,
                         body,
@@ -88,7 +88,7 @@ impl Callbacks for MirCallbacks {
                     );
                 }
                 DomainSelection::Sign => {
-                    domains::sign::run_sign(tcx, def_id, body, &cfg, &places);
+                    mirsa_domains::sign::run_sign(tcx, def_id, body, &cfg, &places);
                 }
             }
         }

@@ -2,7 +2,7 @@ use rustc_middle::mir::*;
 use rustc_middle::ty::{Ty, TyCtxt, TyKind};
 
 use super::abstract_value::*;
-use super::state::{InternvalState, bits_to_i128, scalar_layout};
+use super::state::InternvalState;
 
 fn i128_to_bits(value: i128, bit_width: u64) -> u128 {
     if bit_width == 128 {
@@ -11,6 +11,72 @@ fn i128_to_bits(value: i128, bit_width: u64) -> u128 {
         let mask = (1u128 << bit_width) - 1;
         (value as u128) & mask
     }
+}
+
+fn scalar_layout<'tcx>(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> Option<(u64, bool)> {
+    match ty.kind() {
+        TyKind::Int(int_ty) => Some((
+            int_ty
+                .bit_width()
+                .unwrap_or_else(|| tcx.data_layout.pointer_size.bits()),
+            true,
+        )),
+        TyKind::Uint(uint_ty) => Some((
+            uint_ty
+                .bit_width()
+                .unwrap_or_else(|| tcx.data_layout.pointer_size.bits()),
+            false,
+        )),
+        TyKind::Bool => Some((1, false)),
+        TyKind::Char => Some((32, false)),
+        _ => None,
+    }
+}
+
+fn unsigned_bits_to_i128(bits: u128, bit_width: u64) -> i128 {
+    if bit_width == 128 {
+        if bits <= i128::MAX as u128 {
+            bits as i128
+        } else {
+            i128::MAX
+        }
+    } else {
+        let mask = (1u128 << bit_width) - 1;
+        (bits & mask) as i128
+    }
+}
+
+fn signed_bits_to_i128(bits: u128, bit_width: u64) -> i128 {
+    if bit_width == 128 {
+        return bits as i128;
+    }
+
+    let sign_bit = 1u128 << (bit_width - 1);
+    let mask = (1u128 << bit_width) - 1;
+    let x = bits & mask;
+
+    if (x & sign_bit) != 0 {
+        (x as i128) - ((1u128 << bit_width) as i128)
+    } else {
+        x as i128
+    }
+}
+
+fn bits_to_i128(bits: u128, bit_width: u64, signed: bool) -> i128 {
+    if signed {
+        signed_bits_to_i128(bits, bit_width)
+    } else {
+        unsigned_bits_to_i128(bits, bit_width)
+    }
+}
+
+pub(crate) fn switch_value_to_i128<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    ty: Ty<'tcx>,
+    value: u128,
+) -> Option<i128> {
+    let (bit_width, signed) = scalar_layout(tcx, ty)?;
+    Some(bits_to_i128(value, bit_width, signed))
 }
 
 // 在区间域中计算 Cast；无法可靠保持顺序时保守回退为 Top。
@@ -149,43 +215,6 @@ fn resolve_indexed_place<'tcx>(
     Some(resolved)
 }
 
-fn slice_or_array_len<'tcx>(
-    tcx: TyCtxt<'tcx>,
-    local_decls: &LocalDecls<'tcx>,
-    st: &InternvalState<'tcx>,
-    place: Place<'tcx>,
-) -> Option<Internval> {
-    let ty = place.ty(local_decls, tcx).ty;
-    match ty.kind() {
-        TyKind::Array(_, len) => len
-            .try_to_target_usize(tcx)
-            .map(|len| Internval::new(len as i128, len as i128)),
-        TyKind::Slice(_) => st.get_slice_meta(&place),
-        TyKind::Ref(_, inner, _) => match inner.kind() {
-            TyKind::Array(_, len) => len
-                .try_to_target_usize(tcx)
-                .map(|len| Internval::new(len as i128, len as i128)),
-            TyKind::Slice(_) => st.get_slice_meta(&place),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-fn operand_slice_or_array_len<'tcx>(
-    tcx: TyCtxt<'tcx>,
-    local_decls: &LocalDecls<'tcx>,
-    st: &InternvalState<'tcx>,
-    op: &Operand<'tcx>,
-) -> Option<Internval> {
-    match op {
-        Operand::Copy(place) | Operand::Move(place) => {
-            slice_or_array_len(tcx, local_decls, st, *place)
-        }
-        Operand::Constant(_) => None,
-    }
-}
-
 fn operand_place<'tcx>(op: &Operand<'tcx>) -> Option<Place<'tcx>> {
     match op {
         Operand::Copy(place) | Operand::Move(place) => Some(*place),
@@ -212,6 +241,202 @@ fn terminator_call_path<'tcx>(
         return None;
     };
     Some(tcx.def_path_str(*def_id))
+}
+
+fn static_len<'tcx>(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> Option<Internval> {
+    match ty.kind() {
+        TyKind::Array(_, len) => len
+            .try_to_target_usize(tcx)
+            .map(|len| Internval::new(len as i128, len as i128)),
+        TyKind::Ref(_, inner, _) => static_len(tcx, *inner),
+        _ => None,
+    }
+}
+
+fn place_len<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    local_decls: &LocalDecls<'tcx>,
+    st: &InternvalState<'tcx>,
+    place: Place<'tcx>,
+) -> Internval {
+    let ty = place.ty(local_decls, tcx).ty;
+    if let Some(len) = st.get_len(&place) {
+        return len;
+    }
+    match ty.kind() {
+        TyKind::Slice(_) => Internval::top(),
+        TyKind::Ref(_, inner, _) if matches!(inner.kind(), TyKind::Slice(_)) => Internval::top(),
+        _ => static_len(tcx, ty).unwrap_or_else(Internval::top),
+    }
+}
+
+pub(crate) fn operand_len<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    local_decls: &LocalDecls<'tcx>,
+    st: &InternvalState<'tcx>,
+    op: &Operand<'tcx>,
+) -> Internval {
+    match op {
+        Operand::Copy(place) | Operand::Move(place) => place_len(tcx, local_decls, st, *place),
+        Operand::Constant(_) => Internval::top(),
+    }
+}
+
+pub(crate) fn operand_known_len<'tcx>(
+    st: &InternvalState<'tcx>,
+    op: &Operand<'tcx>,
+) -> Option<Internval> {
+    match op {
+        Operand::Copy(place) | Operand::Move(place) => st.get_len(place),
+        Operand::Constant(_) => None,
+    }
+}
+
+fn slice_or_array_len<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    local_decls: &LocalDecls<'tcx>,
+    st: &InternvalState<'tcx>,
+    place: Place<'tcx>,
+) -> Option<Internval> {
+    let ty = place.ty(local_decls, tcx).ty;
+    match ty.kind() {
+        TyKind::Array(_, len) => len
+            .try_to_target_usize(tcx)
+            .map(|len| Internval::new(len as i128, len as i128)),
+        TyKind::Slice(_) => st.get_len(&place),
+        TyKind::Ref(_, inner, _) => match inner.kind() {
+            TyKind::Array(_, len) => len
+                .try_to_target_usize(tcx)
+                .map(|len| Internval::new(len as i128, len as i128)),
+            TyKind::Slice(_) => st.get_len(&place),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn operand_slice_or_array_len<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    local_decls: &LocalDecls<'tcx>,
+    st: &InternvalState<'tcx>,
+    op: &Operand<'tcx>,
+) -> Option<Internval> {
+    match op {
+        Operand::Copy(place) | Operand::Move(place) => {
+            slice_or_array_len(tcx, local_decls, st, *place)
+        }
+        Operand::Constant(_) => None,
+    }
+}
+
+fn raw_ptr_pointee_len<'tcx>(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> Option<Internval> {
+    let TyKind::RawPtr(inner, _) = ty.kind() else {
+        return None;
+    };
+    static_len(tcx, *inner)
+}
+
+fn place_object_len<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    local_decls: &LocalDecls<'tcx>,
+    st: &InternvalState<'tcx>,
+    place: Place<'tcx>,
+) -> Option<Internval> {
+    st.get_len(&place)
+        .or_else(|| static_len(tcx, place.ty(local_decls, tcx).ty))
+}
+
+fn operand_object_len<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    local_decls: &LocalDecls<'tcx>,
+    st: &InternvalState<'tcx>,
+    op: &Operand<'tcx>,
+) -> Option<Internval> {
+    match op {
+        Operand::Copy(place) | Operand::Move(place) => {
+            place_object_len(tcx, local_decls, st, *place)
+        }
+        Operand::Constant(_) => None,
+    }
+}
+
+fn rvalue_len<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    local_decls: &LocalDecls<'tcx>,
+    st: &InternvalState<'tcx>,
+    rvalue: &Rvalue<'tcx>,
+) -> Option<Internval> {
+    match rvalue {
+        Rvalue::Use(op) | Rvalue::Cast(_, op, _) => operand_known_len(st, op),
+        Rvalue::Ref(_, _, place) | Rvalue::RawPtr(_, place) => {
+            place_object_len(tcx, local_decls, st, *place)
+        }
+        _ => None,
+    }
+}
+
+fn call_len<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    local_decls: &LocalDecls<'tcx>,
+    st: &InternvalState<'tcx>,
+    term: &Terminator<'tcx>,
+    path: &str,
+    ptr_offset: Option<Internval>,
+) -> Option<Internval> {
+    let TerminatorKind::Call {
+        args, destination, ..
+    } = &term.kind
+    else {
+        return None;
+    };
+
+    if path.ends_with("::as_ptr") || path.ends_with("::as_mut_ptr") {
+        return args
+            .first()
+            .and_then(|arg| operand_object_len(tcx, local_decls, st, &arg.node))
+            .or_else(|| raw_ptr_pointee_len(tcx, destination.ty(local_decls, tcx).ty));
+    }
+
+    if (path.ends_with("::add") || path.ends_with("::wrapping_add") || path.ends_with("::offset"))
+        && args.len() >= 2
+    {
+        let base = operand_known_len(st, &args[0].node)?;
+        let offset = ptr_offset?;
+        return Some(sub(&base, &offset));
+    }
+
+    if path.ends_with("::cast") {
+        return args
+            .first()
+            .and_then(|arg| operand_known_len(st, &arg.node));
+    }
+
+    None
+}
+
+fn projected_places_with_runtime_index<'tcx>(
+    st: &InternvalState<'tcx>,
+    place: Place<'tcx>,
+) -> Vec<Place<'tcx>> {
+    st.all_fact_places()
+        .filter(|candidate| {
+            if place.local != candidate.local
+                || place.projection.len() != candidate.projection.len()
+            {
+                return false;
+            }
+            place
+                .projection
+                .iter()
+                .zip(candidate.projection.iter())
+                .all(|(left, right)| match left {
+                    ProjectionElem::Index(_) => {
+                        matches!(right, ProjectionElem::ConstantIndex { .. })
+                    }
+                    _ => left == right,
+                })
+        })
+        .collect()
 }
 
 // 当动态索引左值无法精确解析时，将其对应数组元素全部弱化为 Top。
@@ -335,41 +560,20 @@ pub fn transfer_stmt<'tcx>(
             let (place, rvalue) = &**assign;
             let resolved_place = resolve_indexed_place(tcx, local_decls, st, *place);
             if resolved_place.is_none() {
-                let targets: Vec<Place<'tcx>> = st
-                    .internval
-                    .keys()
-                    .copied()
-                    .filter(|candidate| {
-                        if place.local != candidate.local {
-                            return false;
-                        }
-                        if place.projection.len() != candidate.projection.len() {
-                            return false;
-                        }
-                        place
-                            .projection
-                            .iter()
-                            .zip(candidate.projection.iter())
-                            .all(|(l, r)| match l {
-                                ProjectionElem::Index(_) => {
-                                    matches!(r, ProjectionElem::ConstantIndex { .. })
-                                }
-                                _ => l == r,
-                            })
-                    })
-                    .collect();
+                let targets = projected_places_with_runtime_index(st, *place);
                 if targets.is_empty() {
                     return;
                 }
                 for p in targets {
                     st.set_internval(p, Internval::top());
-                    st.clear_slice_meta(&p);
+                    st.clear_len(&p);
                     st.eq.kill(p);
                 }
                 return;
             }
             let dst_place = resolved_place.unwrap_or(*place);
-            st.clear_slice_meta(&dst_place);
+            let rhs_len = rvalue_len(tcx, local_decls, st, rvalue);
+            st.clear_len(&dst_place);
             // 关系型
             match rvalue {
                 Rvalue::Use(op) => match op {
@@ -408,7 +612,7 @@ pub fn transfer_stmt<'tcx>(
                 Rvalue::UnaryOp(UnOp::PtrMetadata, op) => {
                     let len_iv = match op {
                         Operand::Copy(src) | Operand::Move(src) => {
-                            st.get_slice_meta(src).unwrap_or_else(Internval::top)
+                            st.get_len(src).unwrap_or_else(Internval::top)
                         }
                         Operand::Constant(_) => Internval::top(),
                     };
@@ -434,7 +638,7 @@ pub fn transfer_stmt<'tcx>(
                             if let TyKind::Ref(_, inner, _) = src_ty.kind() {
                                 if let TyKind::Array(_, len) = inner.kind() {
                                     if let Some(len) = len.try_to_target_usize(tcx) {
-                                        st.set_slice_meta(
+                                        st.set_len(
                                             dst_place,
                                             Internval::new(len as i128, len as i128),
                                         );
@@ -453,15 +657,13 @@ pub fn transfer_stmt<'tcx>(
                             .try_to_target_usize(tcx)
                             .map(|len| Internval::new(len as i128, len as i128))
                             .unwrap_or_else(Internval::top),
-                        TyKind::Slice(_) => st.get_slice_meta(src).unwrap_or_else(Internval::top),
+                        TyKind::Slice(_) => st.get_len(src).unwrap_or_else(Internval::top),
                         TyKind::Ref(_, inner, _) => match inner.kind() {
                             TyKind::Array(_, len) => len
                                 .try_to_target_usize(tcx)
                                 .map(|len| Internval::new(len as i128, len as i128))
                                 .unwrap_or_else(Internval::top),
-                            TyKind::Slice(_) => {
-                                st.get_slice_meta(src).unwrap_or_else(Internval::top)
-                            }
+                            TyKind::Slice(_) => st.get_len(src).unwrap_or_else(Internval::top),
                             _ => Internval::top(),
                         },
                         _ => Internval::top(),
@@ -478,7 +680,10 @@ pub fn transfer_stmt<'tcx>(
                             );
                             let elem_internval = eval_operand(tcx, local_decls, op, st);
                             st.set_internval(elem_place, elem_internval);
-                            st.clear_slice_meta(&elem_place);
+                            st.clear_len(&elem_place);
+                            if let Some(len) = operand_known_len(st, op) {
+                                st.set_len(elem_place, len);
+                            }
                         }
                     }
                     AggregateKind::Array(_elem_ty) => {
@@ -494,7 +699,10 @@ pub fn transfer_stmt<'tcx>(
                             );
                             let elem_internval = eval_operand(tcx, local_decls, op, st);
                             st.set_internval(elem_place, elem_internval);
-                            st.clear_slice_meta(&elem_place);
+                            st.clear_len(&elem_place);
+                            if let Some(len) = operand_known_len(st, op) {
+                                st.set_len(elem_place, len);
+                            }
                         }
                     }
                     _ => st.set_internval(dst_place, Internval::top()),
@@ -508,15 +716,12 @@ pub fn transfer_stmt<'tcx>(
                         TyKind::Array(_, len) => {
                             st.eq.union(dst_place, *borrowed_place);
                             if let Some(len) = len.try_to_target_usize(tcx) {
-                                st.set_slice_meta(
-                                    dst_place,
-                                    Internval::new(len as i128, len as i128),
-                                );
+                                st.set_len(dst_place, Internval::new(len as i128, len as i128));
                             }
                         }
                         TyKind::Slice(_) => {
-                            if let Some(len) = st.get_slice_meta(borrowed_place) {
-                                st.set_slice_meta(dst_place, len);
+                            if let Some(len) = st.get_len(borrowed_place) {
+                                st.set_len(dst_place, len);
                             }
                         }
                         _ => {}
@@ -524,6 +729,9 @@ pub fn transfer_stmt<'tcx>(
                 }
 
                 _ => st.set_internval(dst_place, Internval::top()),
+            }
+            if let Some(len) = rhs_len {
+                st.set_len(dst_place, len);
             }
         }
         _ => {}
@@ -542,9 +750,22 @@ pub fn transfer_terminator<'tcx>(
     else {
         return;
     };
+    st.clear_len(destination);
     let Some(path) = terminator_call_path(tcx, local_decls, term) else {
         return;
     };
+    let ptr_offset = if (path.ends_with("::add")
+        || path.ends_with("::wrapping_add")
+        || path.ends_with("::offset"))
+        && args.len() >= 2
+    {
+        Some(eval_operand(tcx, local_decls, &args[1].node, st))
+    } else {
+        None
+    };
+    if let Some(len) = call_len(tcx, local_decls, st, term, &path, ptr_offset) {
+        st.set_len(*destination, len);
+    }
     if !path.ends_with("::get_unchecked") && !path.ends_with("::get_unchecked_mut") {
         return;
     }

@@ -1,10 +1,12 @@
 [package]
-name = "domains"
-version = "0.1.0"
+name = "mirsa-domains"
+version = "0.2.0"
 edition = "2024"
+description = "Abstract interpretation domains for mirsa"
+license = "MIT"
 
 [dependencies]
-core = { path = "../core" }
+mirsa_core = { package = "mirsa-core", path = "../core", version = "0.2.0" }
 
 [package.metadata.rust-analyzer]
 rustc_private = true

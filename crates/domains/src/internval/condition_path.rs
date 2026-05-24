@@ -2,8 +2,8 @@ use rustc_middle::mir::*;
 use rustc_middle::ty::{TyCtxt, TyKind};
 
 use super::abstract_value::{Internval, intersect};
-use super::state::{InternvalState, switch_value_to_i128};
-use super::transfer::{eval_operand, internval_of_const};
+use super::state::InternvalState;
+use super::transfer::{eval_operand, internval_of_const, switch_value_to_i128};
 
 // 将一个 place 与新区间求交，并传播到等价类中的 place。
 fn refine_place_with_interval<'tcx>(
@@ -254,7 +254,7 @@ fn refine_is_empty<'tcx>(
     let (Operand::Copy(place) | Operand::Move(place)) = receiver else {
         return Some(());
     };
-    let current = st.get_slice_meta(place).unwrap_or_else(Internval::top);
+    let current = st.get_len(place).unwrap_or_else(Internval::top);
     let wanted = if truth {
         Internval::new(0, 0)
     } else {
@@ -264,7 +264,7 @@ fn refine_is_empty<'tcx>(
     if refined.is_empty() {
         return None;
     }
-    st.set_slice_meta(*place, refined);
+    st.set_len(*place, refined);
     Some(())
 }
 

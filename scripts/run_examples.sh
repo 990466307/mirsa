@@ -100,12 +100,12 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root" || exit 1
 
 echo "Building driver..."
-if ! cargo build -q -p driver; then
+if ! cargo build -q -p mirsa-driver; then
   echo "error: failed to build driver" >&2
   exit 1
 fi
 
-driver="$repo_root/target/debug/driver"
+driver="$repo_root/target/debug/mirsa-driver"
 sysroot="$(rustc --print sysroot)"
 export LD_LIBRARY_PATH="$sysroot/lib:${LD_LIBRARY_PATH:-}"
 

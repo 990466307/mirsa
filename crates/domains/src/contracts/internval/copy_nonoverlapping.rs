@@ -2,9 +2,10 @@ use rustc_middle::mir::{Body, Terminator, TerminatorKind};
 use rustc_middle::ty::TyCtxt;
 
 use crate::contracts::finding::{Finding, Level};
+use crate::internval::transfer::operand_known_len;
 use crate::internval::{Internval, InternvalState};
 
-use super::shared::{check_le, eval_call_arg, pointer_len_from_operand};
+use super::shared::{check_le, eval_call_arg};
 
 fn check_side(count: Internval, available: Option<Internval>) -> Level {
     let Some(available) = available else {
@@ -26,8 +27,8 @@ pub(crate) fn check<'tcx>(
         return None;
     }
 
-    let src_len = pointer_len_from_operand(tcx, body, state, &args[0].node, 8);
-    let dst_len = pointer_len_from_operand(tcx, body, state, &args[1].node, 8);
+    let src_len = operand_known_len(state, &args[0].node);
+    let dst_len = operand_known_len(state, &args[1].node);
     let count = eval_call_arg(tcx, body, state, &args[2].node);
     let src_level = check_side(count, src_len);
     let dst_level = check_side(count, dst_len);
