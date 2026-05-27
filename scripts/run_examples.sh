@@ -10,7 +10,7 @@ targets=()
 usage() {
   cat <<'USAGE'
 Usage:
-  scripts/run_examples.sh [--domain all|internval|nullptr|sign] [--fail-fast] [--no-verify] [path ...]
+  scripts/run_examples.sh [--domain all|interval|nullptr] [--fail-fast] [--no-verify] [path ...]
 
 Runs MIRSA over example .rs files in batch.
 By default, compares emitted warning codes against examples/expected_warnings.tsv.
@@ -82,7 +82,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$domain" in
-  all|internval|nullptr|sign) ;;
+  all|interval|nullptr) ;;
   *)
     echo "error: unsupported domain '$domain'" >&2
     exit 2

@@ -2,15 +2,15 @@
 
 本文档总结了 `mirsa` 当前两个分析域已经覆盖的 unsafe API。
 
-## Internval 域
+## interval 域
 
 入口文件：
-- [`crates/domains/src/internval/warnings/mod.rs`](/home/wentao/mirsa/crates/domains/src/internval/warnings/mod.rs)
+- [`crates/domains/src/interval/warnings/mod.rs`](/home/wentao/mirsa/crates/domains/src/interval/warnings/mod.rs)
 
 当前支持的 unsafe API：
 - `NonZero::new_unchecked`
   - 规则文件：
-    [`crates/domains/src/internval/warnings/nonzero.rs`](/home/wentao/mirsa/crates/domains/src/internval/warnings/nonzero.rs)
+    [`crates/domains/src/interval/warnings/nonzero.rs`](/home/wentao/mirsa/crates/domains/src/interval/warnings/nonzero.rs)
   - 安全性质：
     参数必须非零
 
@@ -19,19 +19,19 @@
 - `slice::split_at_unchecked`
 - `slice::split_at_mut_unchecked`
   - 规则文件：
-    [`crates/domains/src/internval/warnings/slice_bounds.rs`](/home/wentao/mirsa/crates/domains/src/internval/warnings/slice_bounds.rs)
+    [`crates/domains/src/interval/warnings/slice_bounds.rs`](/home/wentao/mirsa/crates/domains/src/interval/warnings/slice_bounds.rs)
   - 安全性质：
     - `get_unchecked` / `get_unchecked_mut`：`index < len`
     - `split_at_unchecked` / `split_at_mut_unchecked`：`mid <= len`
 
 - `ptr::copy_nonoverlapping`
   - 规则文件：
-    [`crates/domains/src/internval/warnings/copy_nonoverlapping.rs`](/home/wentao/mirsa/crates/domains/src/internval/warnings/copy_nonoverlapping.rs)
+    [`crates/domains/src/interval/warnings/copy_nonoverlapping.rs`](/home/wentao/mirsa/crates/domains/src/interval/warnings/copy_nonoverlapping.rs)
   - 安全性质：
     `count` 不能超过源对象和目标对象的可用长度
 
 辅助函数：
-- [`crates/domains/src/internval/warnings/shared.rs`](/home/wentao/mirsa/crates/domains/src/internval/warnings/shared.rs)
+- [`crates/domains/src/interval/warnings/shared.rs`](/home/wentao/mirsa/crates/domains/src/interval/warnings/shared.rs)
 
 ## Nullptr 域
 

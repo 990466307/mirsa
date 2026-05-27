@@ -1,0 +1,126 @@
+// MIR for `main` after SimplifyCfg-promote-consts
+
+| User Type Annotations
+| 0: user_ty: Canonical { value: Ty(std::vec::Vec<u8>), max_universe: U0, variables: [] }, span: examples/simple.rs:24:12: 24:19, inferred_ty: std::vec::Vec<u8>
+| 1: user_ty: Canonical { value: TypeOf(DefId(5:6146 ~ alloc[c651]::slice::{impl#0}::into_vec), UserArgs { args: [^0, ^1], user_self_ty: Some(UserSelfTy { impl_def_id: DefId(5:6128 ~ alloc[c651]::slice::{impl#0}), self_ty: [^2] }) }), max_universe: U0, variables: [CanonicalVarInfo { kind: Ty(General(U0)) }, CanonicalVarInfo { kind: Ty(General(U0)) }, CanonicalVarInfo { kind: Ty(General(U0)) }] }, span: /home/wentao/.rustup/toolchains/nightly-2025-02-14-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc/src/macros.rs:50:9: 50:24, inferred_ty: fn(std::boxed::Box<[u8]>) -> std::vec::Vec<u8> {std::slice::<impl [u8]>::into_vec::<std::alloc::Global>}
+| 2: user_ty: Canonical { value: Ty(std::vec::Vec<u8>), max_universe: U0, variables: [] }, span: examples/simple.rs:24:12: 24:19, inferred_ty: std::vec::Vec<u8>
+|
+fn main() -> () {
+    let mut _0: ();
+    let _1: std::vec::Vec<u8> as UserTypeProjection { base: UserType(0), projs: [] };
+    let mut _2: std::boxed::Box<[u8]>;
+    let mut _3: std::boxed::Box<[u8; 3]>;
+    let mut _4: usize;
+    let mut _5: usize;
+    let mut _6: *mut u8;
+    let mut _7: std::boxed::Box<[u8; 3]>;
+    let mut _9: std::vec::Vec<u8>;
+    scope 1 {
+        debug b => _1;
+        let _8: std::vec::Vec<u8>;
+        scope 2 {
+            debug f => _8;
+            let _10: i32;
+            scope 3 {
+                debug _bad => _10;
+                let _11: i32;
+                scope 4 {
+                    debug _ok => _11;
+                }
+            }
+        }
+    }
+
+    bb0: {
+        StorageLive(_1);
+        StorageLive(_2);
+        StorageLive(_3);
+        _4 = SizeOf([u8; 3]);
+        _5 = AlignOf([u8; 3]);
+        _6 = alloc::alloc::exchange_malloc(move _4, move _5) -> [return: bb1, unwind: bb15];
+    }
+
+    bb1: {
+        StorageLive(_7);
+        _7 = ShallowInitBox(move _6, [u8; 3]);
+        (*_7) = [const 0_u8, const 0_u8, const 0_u8];
+        _3 = move _7;
+        _2 = move _3 as std::boxed::Box<[u8]> (PointerCoercion(Unsize, Implicit));
+        drop(_3) -> [return: bb2, unwind: bb13];
+    }
+
+    bb2: {
+        drop(_7) -> [return: bb3, unwind: bb14];
+    }
+
+    bb3: {
+        StorageDead(_7);
+        StorageDead(_3);
+        _1 = slice::<impl [u8]>::into_vec::<std::alloc::Global>(move _2) -> [return: bb4, unwind: bb14];
+    }
+
+    bb4: {
+        StorageDead(_2);
+        FakeRead(ForLet(None), _1);
+        AscribeUserType(_1, o, UserTypeProjection { base: UserType(2), projs: [] });
+        StorageLive(_8);
+        StorageLive(_9);
+        _9 = move _1;
+        _8 = from(move _9) -> [return: bb5, unwind: bb11];
+    }
+
+    bb5: {
+        StorageDead(_9);
+        FakeRead(ForLet(None), _8);
+        StorageLive(_10);
+        _10 = assume_uninit_value() -> [return: bb6, unwind: bb10];
+    }
+
+    bb6: {
+        FakeRead(ForLet(None), _10);
+        StorageLive(_11);
+        _11 = assume_written_value() -> [return: bb7, unwind: bb10];
+    }
+
+    bb7: {
+        FakeRead(ForLet(None), _11);
+        _0 = const ();
+        StorageDead(_11);
+        StorageDead(_10);
+        drop(_8) -> [return: bb8, unwind: bb12];
+    }
+
+    bb8: {
+        StorageDead(_8);
+        drop(_1) -> [return: bb9, unwind: bb15];
+    }
+
+    bb9: {
+        StorageDead(_1);
+        return;
+    }
+
+    bb10 (cleanup): {
+        drop(_8) -> [return: bb12, unwind terminate(cleanup)];
+    }
+
+    bb11 (cleanup): {
+        drop(_9) -> [return: bb12, unwind terminate(cleanup)];
+    }
+
+    bb12 (cleanup): {
+        drop(_1) -> [return: bb15, unwind terminate(cleanup)];
+    }
+
+    bb13 (cleanup): {
+        drop(_7) -> [return: bb14, unwind terminate(cleanup)];
+    }
+
+    bb14 (cleanup): {
+        drop(_2) -> [return: bb15, unwind terminate(cleanup)];
+    }
+
+    bb15 (cleanup): {
+        resume;
+    }
+}

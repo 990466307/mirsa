@@ -1,0 +1,27 @@
+// MIR for `assume_uninit_value` after ElaborateBoxDerefs
+
+fn assume_uninit_value() -> i32 {
+    let mut _0: i32;
+    let _1: std::mem::MaybeUninit<i32>;
+    let mut _2: std::mem::MaybeUninit<i32>;
+    scope 1 {
+        debug slot => _1;
+    }
+
+    bb0: {
+        StorageLive(_1);
+        _1 = MaybeUninit::<i32>::uninit() -> [return: bb1, unwind continue];
+    }
+
+    bb1: {
+        StorageLive(_2);
+        _2 = copy _1;
+        _0 = MaybeUninit::<i32>::assume_init(move _2) -> [return: bb2, unwind continue];
+    }
+
+    bb2: {
+        StorageDead(_2);
+        StorageDead(_1);
+        return;
+    }
+}

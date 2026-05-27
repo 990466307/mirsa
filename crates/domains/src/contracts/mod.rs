@@ -1,5 +1,6 @@
+pub mod combined;
 pub mod finding;
-pub mod internval;
+pub mod interval;
 pub mod matcher;
 pub mod nullptr;
 

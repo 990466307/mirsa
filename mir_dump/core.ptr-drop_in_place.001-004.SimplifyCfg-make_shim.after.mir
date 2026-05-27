@@ -1,0 +1,9 @@
+// MIR for `std::ptr::drop_in_place` after SimplifyCfg-make_shim
+
+fn std::ptr::drop_in_place(_1: *mut T) -> () {
+    let mut _0: ();
+
+    bb0: {
+        return;
+    }
+}

@@ -1,0 +1,116 @@
+// MIR for `main` after Derefer
+
+fn main() -> () {
+    let mut _0: ();
+    let _1: std::vec::Vec<u8>;
+    let mut _2: std::boxed::Box<[u8]>;
+    let mut _3: std::boxed::Box<[u8; 3]>;
+    let mut _4: usize;
+    let mut _5: usize;
+    let mut _6: *mut u8;
+    let mut _7: std::boxed::Box<[u8; 3]>;
+    let mut _9: std::vec::Vec<u8>;
+    scope 1 {
+        debug b => _1;
+        let _8: std::vec::Vec<u8>;
+        scope 2 {
+            debug f => _8;
+            let _10: i32;
+            scope 3 {
+                debug _bad => _10;
+                let _11: i32;
+                scope 4 {
+                    debug _ok => _11;
+                }
+            }
+        }
+    }
+
+    bb0: {
+        StorageLive(_1);
+        StorageLive(_2);
+        StorageLive(_3);
+        _4 = SizeOf([u8; 3]);
+        _5 = AlignOf([u8; 3]);
+        _6 = alloc::alloc::exchange_malloc(move _4, move _5) -> [return: bb1, unwind continue];
+    }
+
+    bb1: {
+        StorageLive(_7);
+        _7 = ShallowInitBox(move _6, [u8; 3]);
+        (*_7) = [const 0_u8, const 0_u8, const 0_u8];
+        _3 = move _7;
+        _2 = move _3 as std::boxed::Box<[u8]> (PointerCoercion(Unsize, Implicit));
+        drop(_3) -> [return: bb2, unwind: bb13];
+    }
+
+    bb2: {
+        drop(_7) -> [return: bb3, unwind: bb14];
+    }
+
+    bb3: {
+        StorageDead(_7);
+        StorageDead(_3);
+        _1 = slice::<impl [u8]>::into_vec::<std::alloc::Global>(move _2) -> [return: bb4, unwind: bb14];
+    }
+
+    bb4: {
+        StorageDead(_2);
+        StorageLive(_8);
+        StorageLive(_9);
+        _9 = move _1;
+        _8 = from(move _9) -> [return: bb5, unwind: bb11];
+    }
+
+    bb5: {
+        StorageDead(_9);
+        StorageLive(_10);
+        _10 = assume_uninit_value() -> [return: bb6, unwind: bb10];
+    }
+
+    bb6: {
+        StorageLive(_11);
+        _11 = assume_written_value() -> [return: bb7, unwind: bb10];
+    }
+
+    bb7: {
+        _0 = const ();
+        StorageDead(_11);
+        StorageDead(_10);
+        drop(_8) -> [return: bb8, unwind: bb12];
+    }
+
+    bb8: {
+        StorageDead(_8);
+        drop(_1) -> [return: bb9, unwind continue];
+    }
+
+    bb9: {
+        StorageDead(_1);
+        return;
+    }
+
+    bb10 (cleanup): {
+        drop(_8) -> [return: bb12, unwind terminate(cleanup)];
+    }
+
+    bb11 (cleanup): {
+        drop(_9) -> [return: bb12, unwind terminate(cleanup)];
+    }
+
+    bb12 (cleanup): {
+        drop(_1) -> [return: bb15, unwind terminate(cleanup)];
+    }
+
+    bb13 (cleanup): {
+        drop(_7) -> [return: bb14, unwind terminate(cleanup)];
+    }
+
+    bb14 (cleanup): {
+        drop(_2) -> [return: bb15, unwind terminate(cleanup)];
+    }
+
+    bb15 (cleanup): {
+        resume;
+    }
+}

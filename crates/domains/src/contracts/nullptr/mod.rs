@@ -6,10 +6,11 @@ use rustc_middle::mir::Body;
 use rustc_middle::ty::TyCtxt;
 
 use crate::contracts::emit_call_findings;
+use crate::contracts::finding::Finding;
 use crate::contracts::matcher::{ContractCall, classify_call};
 use crate::framework::forward::PathForwardAnalysisResult;
-use crate::nullptr::NullPtrState;
 use crate::nullptr::engine::state_before_location;
+use crate::nullptr::{NullPtrAnalysisState, NullPtrState};
 
 pub fn is_supported_unsafe_call<'tcx>(
     tcx: TyCtxt<'tcx>,
@@ -22,7 +23,7 @@ pub fn is_supported_unsafe_call<'tcx>(
 pub fn emit_nonnull_call_warnings<'tcx>(
     tcx: TyCtxt<'tcx>,
     body: &Body<'tcx>,
-    result: &PathForwardAnalysisResult<NullPtrState<'tcx>>,
+    result: &PathForwardAnalysisResult<NullPtrAnalysisState<'tcx>>,
     warn_on_maybe: bool,
 ) {
     emit_call_findings(
@@ -30,18 +31,31 @@ pub fn emit_nonnull_call_warnings<'tcx>(
         body,
         result,
         state_before_location,
-        |tcx, body, term, state, call| match call {
-            ContractCall::PtrCopyNonoverlapping => {
-                copy_nonoverlapping::check(tcx, body, term, state, warn_on_maybe)
-            }
-            ContractCall::NonNullNewUnchecked
-            | ContractCall::CStrFromPtr
-            | ContractCall::SliceFromRawParts
-            | ContractCall::SliceFromRawPartsMut
-            | ContractCall::VecFromRawParts
-            | ContractCall::PtrRead
-            | ContractCall::PtrWrite => nonnull_arg::check(tcx, body, term, state, warn_on_maybe),
-            _ => None,
+        |tcx, body, term, state, call| {
+            check_nullptr_call(tcx, body, term, &state.nullptr, call, warn_on_maybe)
         },
     );
+}
+
+pub(crate) fn check_nullptr_call<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    body: &Body<'tcx>,
+    term: &rustc_middle::mir::Terminator<'tcx>,
+    state: &NullPtrState<'tcx>,
+    call: ContractCall,
+    warn_on_maybe: bool,
+) -> Option<Finding> {
+    match call {
+        ContractCall::PtrCopyNonoverlapping => {
+            copy_nonoverlapping::check(tcx, body, term, state, warn_on_maybe)
+        }
+        ContractCall::NonNullNewUnchecked
+        | ContractCall::CStrFromPtr
+        | ContractCall::SliceFromRawParts
+        | ContractCall::SliceFromRawPartsMut
+        | ContractCall::VecFromRawParts
+        | ContractCall::PtrRead
+        | ContractCall::PtrWrite => nonnull_arg::check(tcx, body, term, state, warn_on_maybe),
+        _ => None,
+    }
 }

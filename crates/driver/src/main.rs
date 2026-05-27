@@ -16,9 +16,8 @@ use rustc_middle::mir::Body;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DomainSelection {
     All,
-    Internval,
+    Interval,
     Nullptr,
-    Sign,
 }
 
 /// 打印 MIR：
@@ -64,18 +63,17 @@ impl Callbacks for MirCallbacks {
             let ref_places = mirsa_core::mir::collect_ref_places(tcx, body);
             match self.domain {
                 DomainSelection::All => {
-                    mirsa_domains::internval::run_internval(tcx, def_id, body, &cfg, &places);
-                    mirsa_domains::nullptr::run_nullptr(
+                    mirsa_domains::combined::run_combined(
                         tcx,
                         def_id,
                         body,
                         &cfg,
+                        &places,
                         &ptr_places,
-                        &ref_places,
                     );
                 }
-                DomainSelection::Internval => {
-                    mirsa_domains::internval::run_internval(tcx, def_id, body, &cfg, &places);
+                DomainSelection::Interval => {
+                    mirsa_domains::interval::run_interval(tcx, def_id, body, &cfg, &places);
                 }
                 DomainSelection::Nullptr => {
                     mirsa_domains::nullptr::run_nullptr(
@@ -86,9 +84,6 @@ impl Callbacks for MirCallbacks {
                         &ptr_places,
                         &ref_places,
                     );
-                }
-                DomainSelection::Sign => {
-                    mirsa_domains::sign::run_sign(tcx, def_id, body, &cfg, &places);
                 }
             }
         }
@@ -134,12 +129,11 @@ fn parse_driver_args(args: Vec<String>) -> (DomainSelection, Vec<String>) {
             };
             domain = match value.as_str() {
                 "all" => DomainSelection::All,
-                "internval" => DomainSelection::Internval,
+                "interval" => DomainSelection::Interval,
                 "nullptr" => DomainSelection::Nullptr,
-                "sign" => DomainSelection::Sign,
                 other => {
                     eprintln!(
-                        "error: unsupported domain `{other}`, expected one of: all, internval, nullptr, sign"
+                        "error: unsupported domain `{other}`, expected one of: all, interval, nullptr"
                     );
                     std::process::exit(2);
                 }

@@ -1,0 +1,4 @@
+max_paths = 100
+max_iterations = 100
+warn_on_maybe = true
+debug = true

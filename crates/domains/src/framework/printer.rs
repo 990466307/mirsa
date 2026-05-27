@@ -4,7 +4,9 @@ use crate::framework::forward::{
 };
 use mirsa_core::cfg::Cfg;
 use rustc_hir::def_id::DefId;
-use rustc_middle::mir::{Body, Local, Place, ProjectionElem, TerminatorKind, VarDebugInfoContents};
+use rustc_middle::mir::{
+    Body, Local, Location, Place, ProjectionElem, Terminator, TerminatorKind, VarDebugInfoContents,
+};
 use rustc_middle::ty::TyCtxt;
 use std::collections::HashMap;
 
@@ -84,6 +86,70 @@ pub fn format_place_label<'tcx>(
     label
 }
 
+pub fn visible_entries<'tcx, S>(body: &Body<'tcx>, state: &S) -> Vec<(String, String)>
+where
+    S: StateEntries<'tcx>,
+{
+    let local_names = collect_local_names(body);
+    let mut entries: Vec<(String, String)> = state
+        .entries()
+        .into_iter()
+        .filter(|(place, _)| state.should_print_entry(*place))
+        .map(|(place, value)| (format_place_label(place, &local_names), value))
+        .filter(|(label, _)| !label.starts_with('_'))
+        .collect();
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    entries.dedup();
+    entries
+}
+
+pub fn print_call_pre_states<'tcx, S>(
+    tcx: TyCtxt<'tcx>,
+    body: &Body<'tcx>,
+    result: &PathForwardAnalysisResult<S>,
+    mut state_before: impl FnMut(
+        TyCtxt<'tcx>,
+        &Body<'tcx>,
+        &PathForwardAnalysisResult<S>,
+        Location,
+    ) -> Option<S>,
+    mut should_print_call: impl FnMut(TyCtxt<'tcx>, &Body<'tcx>, &Terminator<'tcx>) -> bool,
+) where
+    S: StateEntries<'tcx>,
+{
+    for (bb, bbdata) in body.basic_blocks.iter_enumerated() {
+        let Some(term) = bbdata.terminator.as_ref() else {
+            continue;
+        };
+        let TerminatorKind::Call { .. } = &term.kind else {
+            continue;
+        };
+        if !should_print_call(tcx, body, term) {
+            continue;
+        }
+        let location = Location {
+            block: bb,
+            statement_index: bbdata.statements.len(),
+        };
+        let Some(state) = state_before(tcx, body, result, location) else {
+            continue;
+        };
+        let entries = visible_entries(body, &state);
+        if entries.is_empty() {
+            continue;
+        }
+        println!("  unsafe pre-state @ bb{}:", bb.index());
+        let width = entries
+            .iter()
+            .map(|(label, _)| label.len())
+            .max()
+            .unwrap_or(0);
+        for (label, value) in entries {
+            println!("    {label:width$} => {value}");
+        }
+    }
+}
+
 pub fn run_and_print_path_sensitive_analysis<'tcx, A>(
     tcx: TyCtxt<'tcx>,
     def_id: DefId,
@@ -99,16 +165,9 @@ pub fn run_and_print_path_sensitive_analysis<'tcx, A>(
     print_function_header(tcx, def_id);
     let picked_bb_idx = pick_return_or_last_bb(body, result.out_states.len());
     if let Some(state) = result.out_states.get(picked_bb_idx) {
-        let local_names = collect_local_names(body);
         println!("  bb{picked_bb_idx}:");
         println!("  locals: {:?}", body.var_debug_info);
-        let mut entries: Vec<(String, String)> = state
-            .entries()
-            .into_iter()
-            .filter(|(place, _)| state.should_print_entry(*place))
-            .map(|(place, value)| (format_place_label(place, &local_names), value))
-            .collect();
-        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        let entries = visible_entries(body, state);
         let place_width = entries
             .iter()
             .map(|(place, _)| place.len())
@@ -133,14 +192,10 @@ where
     run_path_sensitive_forward_analysis_with_config(tcx, body, cfg, semantics, config)
 }
 
-pub fn print_all_bb_states<'tcx, S>(
-    body: &Body<'tcx>,
-    states: &[S],
-    mut print_entry: impl FnMut(Place<'tcx>, &S) -> Option<String>,
-) where
+pub fn print_all_bb_states<'tcx, S>(body: &Body<'tcx>, states: &[S])
+where
     S: StateEntries<'tcx>,
 {
-    let local_names = collect_local_names(body);
     println!("  locals: {:?}", body.var_debug_info);
     for (bb, state) in body
         .basic_blocks
@@ -148,13 +203,7 @@ pub fn print_all_bb_states<'tcx, S>(
         .filter_map(|(bb, _)| states.get(bb.index()).map(|state| (bb, state)))
     {
         println!("  bb{}:", bb.index());
-        let mut entries: Vec<(String, String)> = state
-            .entries()
-            .into_iter()
-            .filter_map(|(place, _)| print_entry(place, state).map(|value| (place, value)))
-            .map(|(place, value)| (format_place_label(place, &local_names), value))
-            .collect();
-        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        let entries = visible_entries(body, state);
         let place_width = entries
             .iter()
             .map(|(place, _)| place.len())
@@ -164,4 +213,17 @@ pub fn print_all_bb_states<'tcx, S>(
             println!("    {place:place_width$} => {value}");
         }
     }
+}
+
+pub fn print_final_analysis_result<'tcx, S>(
+    body: &Body<'tcx>,
+    result: &PathForwardAnalysisResult<S>,
+) where
+    S: StateEntries<'tcx>,
+{
+    println!("  final in-states:");
+    print_all_bb_states(body, &result.in_states);
+
+    println!("  final out-states:");
+    print_all_bb_states(body, &result.out_states);
 }

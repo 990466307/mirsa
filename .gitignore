@@ -3,3 +3,5 @@
 *.md
 !TEST_SUITE.md
 *.docx
+/.codegraph
+*.txt

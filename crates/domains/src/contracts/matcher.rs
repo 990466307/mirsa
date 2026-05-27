@@ -20,7 +20,7 @@ pub(crate) enum ContractCall {
 }
 
 impl ContractCall {
-    pub(crate) fn has_internval_contract(self) -> bool {
+    pub(crate) fn has_interval_contract(self) -> bool {
         matches!(
             self,
             ContractCall::NonZeroNewUnchecked

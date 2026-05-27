@@ -1,0 +1,38 @@
+// MIR for `assume_written_value` after StateTransform
+
+fn assume_written_value() -> i32 {
+    let mut _0: i32;
+    let mut _1: std::mem::MaybeUninit<i32>;
+    let _2: &mut i32;
+    let mut _3: &mut std::mem::MaybeUninit<i32>;
+    let mut _4: std::mem::MaybeUninit<i32>;
+    scope 1 {
+        debug slot => _1;
+    }
+
+    bb0: {
+        StorageLive(_1);
+        _1 = MaybeUninit::<i32>::uninit() -> [return: bb1, unwind continue];
+    }
+
+    bb1: {
+        StorageLive(_2);
+        StorageLive(_3);
+        _3 = &mut _1;
+        _2 = MaybeUninit::<i32>::write(move _3, const 42_i32) -> [return: bb2, unwind continue];
+    }
+
+    bb2: {
+        StorageDead(_3);
+        StorageDead(_2);
+        StorageLive(_4);
+        _4 = copy _1;
+        _0 = MaybeUninit::<i32>::assume_init(move _4) -> [return: bb3, unwind continue];
+    }
+
+    bb3: {
+        StorageDead(_4);
+        StorageDead(_1);
+        return;
+    }
+}

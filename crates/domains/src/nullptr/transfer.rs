@@ -2,8 +2,8 @@ use rustc_middle::mir::*;
 use rustc_middle::ty::{Ty, TyCtxt, TyKind, TypingEnv};
 
 use super::abstract_value::NullPtr;
-use super::access_path::AccessPath;
 use super::state::NullPtrState;
+use crate::framework::access_path::AccessPath;
 
 pub(crate) fn is_ptr_like(ty: Ty<'_>) -> bool {
     matches!(ty.kind(), TyKind::RawPtr(_, _) | TyKind::FnPtr(..))
@@ -142,17 +142,6 @@ fn first_deref_base<'tcx>(tcx: TyCtxt<'tcx>, place: Place<'tcx>) -> Option<Place
     None
 }
 
-fn kill_eq_for_path(st: &mut NullPtrState<'_>, path: &AccessPath) {
-    st.eq.kill(path.clone());
-    let affected: Vec<_> = st
-        .fact_paths()
-        .filter(|candidate| candidate.strip_pattern_prefix(path).is_some())
-        .collect();
-    for candidate in affected {
-        st.eq.kill(candidate);
-    }
-}
-
 pub fn transfer_stmt<'tcx>(
     tcx: TyCtxt<'tcx>,
     st: &mut NullPtrState<'tcx>,
@@ -181,9 +170,6 @@ pub fn transfer_stmt<'tcx>(
                     let field_ty = op.ty(local_decls, tcx);
                     let field_place =
                         place.project_deeper(&[ProjectionElem::Field(idx.into(), field_ty)], tcx);
-                    if let Some(path) = st.access_path_for_place(field_place) {
-                        kill_eq_for_path(st, &path);
-                    }
                     if let Some(src) = operand_path(st, op) {
                         if is_tracked(field_ty) {
                             st.copy_place_from_path(
@@ -223,9 +209,6 @@ pub fn transfer_stmt<'tcx>(
                         }],
                         tcx,
                     );
-                    if let Some(path) = st.access_path_for_place(elem_place) {
-                        kill_eq_for_path(st, &path);
-                    }
                     if let Some(src) = operand_path(st, op) {
                         st.copy_place_from_path(elem_place, &src, NullPtr::MaybeNull, "aggregate");
                     } else {
@@ -250,14 +233,11 @@ pub fn transfer_stmt<'tcx>(
     if !is_tracked(dst_ty) {
         if let Rvalue::Use(Operand::Copy(src) | Operand::Move(src)) = rvalue {
             if let Some(src_path) = st.access_path_for_place(*src) {
-                kill_eq_for_path(st, &dst_path);
                 st.copy_child_subtree(&dst_path, &src_path, NullPtr::MaybeNull, "assign");
             }
         }
         return;
     }
-
-    kill_eq_for_path(st, &dst_path);
 
     match rvalue {
         Rvalue::Use(op) => {
@@ -338,7 +318,6 @@ pub fn transfer_terminator<'tcx>(
                     if (name.ends_with("::null") || name.ends_with("::null_mut"))
                         && name.contains("::ptr::")
                     {
-                        kill_eq_for_path(st, &dst_path);
                         st.set_path(dst_path.clone(), NullPtr::Null);
                         handled = true;
                     } else if name.ends_with("::cast")
@@ -348,7 +327,6 @@ pub fn transfer_terminator<'tcx>(
                         || name.ends_with("::map_addr")
                     {
                         if let Some(first) = args.first() {
-                            kill_eq_for_path(st, &dst_path);
                             assign_place_from_operand(
                                 tcx,
                                 local_decls,
@@ -364,7 +342,6 @@ pub fn transfer_terminator<'tcx>(
                 }
 
                 if !handled {
-                    kill_eq_for_path(st, &dst_path);
                     st.set_path(dst_path, unknown_value_for_type(dst_ty));
                 }
             }

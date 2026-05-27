@@ -1,19 +1,24 @@
-use crate::framework::eq_domain::{EqDomain, join_eq};
 use crate::framework::forward::DomainState;
 use crate::framework::printer::StateEntries;
+use crate::framework::symbolic::{SymbolicState, join_display_places};
 use rustc_middle::mir::Place;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use super::abstract_value::{NullPtr, join};
-use super::access_path::{AccessPath, AccessPathElem};
+use crate::framework::access_path::{AccessPath, AccessPathElem};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NullPtrState<'tcx> {
     facts: HashMap<AccessPath, NullPtr>,
     display_places: HashMap<AccessPath, Place<'tcx>>,
-    pub eq: EqDomain<'tcx, AccessPath>,
     debug: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NullPtrAnalysisState<'tcx> {
+    pub symbolic: SymbolicState<'tcx>,
+    pub nullptr: NullPtrState<'tcx>,
 }
 
 impl<'tcx> NullPtrState<'tcx> {
@@ -21,7 +26,6 @@ impl<'tcx> NullPtrState<'tcx> {
         Self {
             facts: HashMap::new(),
             display_places: HashMap::new(),
-            eq: EqDomain::new(),
             debug,
         }
     }
@@ -77,7 +81,7 @@ impl<'tcx> NullPtrState<'tcx> {
     }
 
     pub fn path_for_place(place: Place<'tcx>) -> Option<AccessPath> {
-        AccessPath::from_projection(AccessPath::from_local(place.local), place.projection)
+        AccessPath::from_place(place)
     }
 
     pub fn contains_place(&self, place: Place<'tcx>) -> bool {
@@ -243,7 +247,7 @@ impl<'tcx> DomainState<'tcx> for NullPtrState<'tcx> {
     }
 
     fn state_changed(previous: &Self, next: &Self) -> bool {
-        previous.facts != next.facts || !previous.eq.equivalent_to(&next.eq)
+        previous.facts != next.facts
     }
 }
 
@@ -269,13 +273,13 @@ impl<'tcx> fmt::Display for NullPtrState<'tcx> {
 impl<'tcx> StateEntries<'tcx> for NullPtrState<'tcx> {
     fn entries(&self) -> Vec<(Place<'tcx>, String)> {
         self.display_places
-            .iter()
-            .filter_map(|(path, place)| {
+            .keys()
+            .filter_map(|path| {
                 let value = self.get_path(path);
                 if value == NullPtr::Bot {
                     None
                 } else {
-                    Some((*place, value.to_string()))
+                    Some((*self.display_places.get(path)?, value.to_string()))
                 }
             })
             .collect()
@@ -303,15 +307,54 @@ pub fn join_state<'tcx>(a: &NullPtrState<'tcx>, b: &NullPtrState<'tcx>) -> NullP
         let right_value = b.facts.get(key).copied().unwrap_or(NullPtr::Bot);
         out.facts.insert(key.clone(), join(left_value, right_value));
     }
-    for key in a.display_places.keys().chain(b.display_places.keys()) {
-        if let Some(place) = a
-            .display_places
-            .get(key)
-            .or_else(|| b.display_places.get(key))
-        {
-            out.display_places.insert(key.clone(), *place);
+    out.display_places = join_display_places(&a.display_places, &b.display_places);
+    out
+}
+
+impl<'tcx> NullPtrState<'tcx> {
+    pub fn merge_display_places_into(&self, symbolic: &mut SymbolicState<'tcx>) {
+        symbolic.remember_places(
+            self.display_places
+                .iter()
+                .map(|(path, place)| (path.clone(), *place)),
+        );
+    }
+}
+
+impl<'tcx> NullPtrAnalysisState<'tcx> {
+    pub fn new(nullptr: NullPtrState<'tcx>) -> Self {
+        let mut symbolic = SymbolicState::new();
+        nullptr.merge_display_places_into(&mut symbolic);
+        Self { symbolic, nullptr }
+    }
+}
+
+impl<'tcx> DomainState<'tcx> for NullPtrAnalysisState<'tcx> {
+    fn join(left: &Self, right: &Self) -> Self {
+        Self {
+            symbolic: SymbolicState::join(&left.symbolic, &right.symbolic),
+            nullptr: NullPtrState::join(&left.nullptr, &right.nullptr),
         }
     }
-    out.eq = join_eq(&a.eq, &b.eq);
-    out
+
+    fn state_changed(previous: &Self, next: &Self) -> bool {
+        NullPtrState::state_changed(&previous.nullptr, &next.nullptr)
+            || previous.symbolic != next.symbolic
+    }
+}
+
+impl<'tcx> fmt::Display for NullPtrAnalysisState<'tcx> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.nullptr.fmt(f)
+    }
+}
+
+impl<'tcx> StateEntries<'tcx> for NullPtrAnalysisState<'tcx> {
+    fn entries(&self) -> Vec<(Place<'tcx>, String)> {
+        self.nullptr.entries()
+    }
+
+    fn should_print_entry(&self, place: Place<'tcx>) -> bool {
+        self.nullptr.should_print_entry(place)
+    }
 }

@@ -1,0 +1,86 @@
+// MIR for `from` 0 renumber
+
+| User Type Annotations
+| 0: user_ty: Canonical { value: TypeOf(DefId(5:7882 ~ alloc[c651]::vec::{impl#0}::from_raw_parts), UserArgs { args: [^0], user_self_ty: Some(UserSelfTy { impl_def_id: DefId(5:7877 ~ alloc[c651]::vec::{impl#0}), self_ty: std::vec::Vec<^1, ^2> }) }), max_universe: U0, variables: [CanonicalVarInfo { kind: Ty(General(U0)) }, CanonicalVarInfo { kind: Ty(General(U0)) }, CanonicalVarInfo { kind: Ty(General(U0)) }] }, span: examples/simple.rs:20:14: 20:33, inferred_ty: unsafe fn(*mut u8, usize, usize) -> std::vec::Vec<u8> {std::vec::Vec::<u8>::from_raw_parts}
+|
+fn from(_1: Vec<u8>) -> Vec<u8> {
+    debug buffer => _1;
+    let mut _0: std::vec::Vec<u8>;
+    let _2: usize;
+    let mut _3: &std::vec::Vec<u8>;
+    let mut _5: &std::vec::Vec<u8>;
+    let mut _7: &mut std::vec::Vec<u8>;
+    let mut _8: *mut u8;
+    let mut _9: usize;
+    let mut _10: usize;
+    scope 1 {
+        debug len => _2;
+        let _4: usize;
+        scope 2 {
+            debug cap => _4;
+            let _6: *mut u8;
+            scope 3 {
+                debug ptr => _6;
+            }
+        }
+    }
+
+    bb0: {
+        StorageLive(_2);
+        StorageLive(_3);
+        _3 = &_1;
+        _2 = Vec::<u8>::len(move _3) -> [return: bb1, unwind: bb6];
+    }
+
+    bb1: {
+        StorageDead(_3);
+        FakeRead(ForLet(None), _2);
+        StorageLive(_4);
+        StorageLive(_5);
+        _5 = &_1;
+        _4 = Vec::<u8>::capacity(move _5) -> [return: bb2, unwind: bb6];
+    }
+
+    bb2: {
+        StorageDead(_5);
+        FakeRead(ForLet(None), _4);
+        StorageLive(_6);
+        StorageLive(_7);
+        _7 = &mut _1;
+        _6 = Vec::<u8>::as_mut_ptr(move _7) -> [return: bb3, unwind: bb6];
+    }
+
+    bb3: {
+        StorageDead(_7);
+        FakeRead(ForLet(None), _6);
+        StorageLive(_8);
+        _8 = copy _6;
+        StorageLive(_9);
+        _9 = copy _2;
+        StorageLive(_10);
+        _10 = copy _4;
+        _0 = Vec::<u8>::from_raw_parts(move _8, move _9, move _10) -> [return: bb4, unwind: bb6];
+    }
+
+    bb4: {
+        StorageDead(_10);
+        StorageDead(_9);
+        StorageDead(_8);
+        StorageDead(_6);
+        StorageDead(_4);
+        StorageDead(_2);
+        drop(_1) -> [return: bb5, unwind: bb7];
+    }
+
+    bb5: {
+        return;
+    }
+
+    bb6 (cleanup): {
+        drop(_1) -> [return: bb7, unwind terminate(cleanup)];
+    }
+
+    bb7 (cleanup): {
+        resume;
+    }
+}

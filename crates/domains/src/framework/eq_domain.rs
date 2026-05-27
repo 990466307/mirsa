@@ -121,6 +121,10 @@ where
         labels_a == labels_b
     }
 
+    pub fn keys(&self) -> impl Iterator<Item = K> + '_ {
+        self.parent.keys().cloned()
+    }
+
     pub fn leq(&self, other: &EqDomain<'tcx, K>) -> bool {
         let vars: Vec<K> = {
             let mut s = HashSet::new();
