@@ -221,6 +221,9 @@ pub fn div(a: &Interval, b: &Interval) -> Interval {
 }
 
 pub fn lt(a: &Interval, b: &Interval) -> Interval {
+    if a.is_empty() || b.is_empty() {
+        return Interval::empty();
+    }
     if a.high < b.low {
         Interval::new(1, 1) // true
     } else if a.low >= b.high {
@@ -231,6 +234,9 @@ pub fn lt(a: &Interval, b: &Interval) -> Interval {
 }
 
 pub fn le(a: &Interval, b: &Interval) -> Interval {
+    if a.is_empty() || b.is_empty() {
+        return Interval::empty();
+    }
     if a.high <= b.low {
         Interval::new(1, 1) // true
     } else if a.low > b.high {
@@ -241,6 +247,9 @@ pub fn le(a: &Interval, b: &Interval) -> Interval {
 }
 
 pub fn gt(a: &Interval, b: &Interval) -> Interval {
+    if a.is_empty() || b.is_empty() {
+        return Interval::empty();
+    }
     if a.low > b.high {
         Interval::new(1, 1) // true
     } else if a.high <= b.low {
@@ -251,6 +260,9 @@ pub fn gt(a: &Interval, b: &Interval) -> Interval {
 }
 
 pub fn ge(a: &Interval, b: &Interval) -> Interval {
+    if a.is_empty() || b.is_empty() {
+        return Interval::empty();
+    }
     if a.low >= b.high {
         Interval::new(1, 1) // true
     } else if a.high < b.low {
@@ -261,6 +273,9 @@ pub fn ge(a: &Interval, b: &Interval) -> Interval {
 }
 
 pub fn neq(a: &Interval, b: &Interval) -> Interval {
+    if a.is_empty() || b.is_empty() {
+        return Interval::empty();
+    }
     if a.high < b.low || a.low > b.high {
         Interval::new(1, 1) // true
     } else if a.low == a.high && b.low == b.high && a.low == b.low {
@@ -271,6 +286,9 @@ pub fn neq(a: &Interval, b: &Interval) -> Interval {
 }
 
 pub fn eq(a: &Interval, b: &Interval) -> Interval {
+    if a.is_empty() || b.is_empty() {
+        return Interval::empty();
+    }
     if a.low == a.high && b.low == b.high && a.low == b.low {
         Interval::new(1, 1) // true
     } else if a.high < b.low || a.low > b.high {
@@ -308,6 +326,34 @@ pub fn bitxor(a: &Interval, b: &Interval) -> Interval {
         return Interval::new(a.low ^ b.low, a.low ^ b.low);
     }
     Interval::top()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Interval, eq, ge, gt, le, lt, neq};
+
+    #[test]
+    fn comparisons_propagate_empty_intervals() {
+        let empty = Interval::empty();
+        let value = Interval::new(128, 128);
+
+        for result in [
+            lt(&empty, &value),
+            le(&empty, &value),
+            gt(&empty, &value),
+            ge(&empty, &value),
+            eq(&empty, &value),
+            neq(&empty, &value),
+            lt(&value, &empty),
+            le(&value, &empty),
+            gt(&value, &empty),
+            ge(&value, &empty),
+            eq(&value, &empty),
+            neq(&value, &empty),
+        ] {
+            assert_eq!(result, empty);
+        }
+    }
 }
 
 fn safe_div(a: i128, b: i128) -> i128 {

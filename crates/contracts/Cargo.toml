@@ -1,11 +1,12 @@
 [package]
-name = "mirsa-domains"
+name = "mirsa-contracts"
 version = "0.2.0"
 edition = "2024"
-description = "Abstract interpretation domains for mirsa"
+description = "Unsafe API contracts for mirsa"
 license = "MIT"
 
 [dependencies]
+mirsa_domains = { package = "mirsa-domains", path = "../domains", version = "0.2.0" }
 mirsa_framework = { package = "mirsa-framework", path = "../framework", version = "0.2.0" }
 mirsa_relations = { package = "mirsa-relations", path = "../relations", version = "0.2.0" }
 

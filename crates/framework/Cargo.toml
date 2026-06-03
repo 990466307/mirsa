@@ -1,11 +1,11 @@
 [package]
-name = "mirsa-driver"
-version = "0.1.0"
+name = "mirsa-framework"
+version = "0.2.0"
 edition = "2024"
-publish = false
+description = "Generic analysis framework for mirsa"
+license = "MIT"
 
 [dependencies]
-mirsa_analysis = { package = "mirsa-analysis", path = "../analysis", version = "0.2.0" }
 mirsa_core = { package = "mirsa-core", path = "../core", version = "0.2.0" }
 
 [package.metadata.rust-analyzer]

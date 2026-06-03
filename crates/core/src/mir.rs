@@ -91,6 +91,20 @@ pub fn collect_body_places<'tcx>(tcx: TyCtxt<'tcx>, body: &Body<'tcx>) -> Vec<Pl
     collector.places.into_iter().collect()
 }
 
+fn is_interval_scalar_ty(ty: rustc_middle::ty::Ty<'_>) -> bool {
+    matches!(
+        ty.kind(),
+        TyKind::Int(_) | TyKind::Uint(_) | TyKind::Bool | TyKind::Char
+    )
+}
+
+pub fn collect_interval_places<'tcx>(tcx: TyCtxt<'tcx>, body: &Body<'tcx>) -> Vec<Place<'tcx>> {
+    collect_body_places(tcx, body)
+        .into_iter()
+        .filter(|place| is_interval_scalar_ty(place.ty(&body.local_decls, tcx).ty))
+        .collect()
+}
+
 pub fn collect_ref_places<'tcx>(tcx: TyCtxt<'tcx>, body: &Body<'tcx>) -> Vec<Place<'tcx>> {
     let _ = tcx;
     body.local_decls

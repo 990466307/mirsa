@@ -5,5 +5,7 @@ extern crate rustc_hir;
 extern crate rustc_middle;
 extern crate rustc_span;
 
-pub mod interval;
-pub mod nullptr;
+mod combined_warnings;
+pub mod reduced_product;
+
+pub use reduced_product as combined;

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-set -uo pipefail
+set -euo pipefail
 
-domain="all"
+debug=0
+edition="2024"
 fail_fast=0
 verify=1
 expected_file="examples/expected_warnings.tsv"
@@ -10,10 +11,11 @@ targets=()
 usage() {
   cat <<'USAGE'
 Usage:
-  scripts/run_examples.sh [--domain all|interval|nullptr] [--fail-fast] [--no-verify] [path ...]
+  scripts/run_examples.sh [--debug] [--edition EDITION] [--fail-fast] [--no-verify] [path ...]
 
 Runs MIRSA over example .rs files in batch.
 By default, compares emitted warning codes against examples/expected_warnings.tsv.
+MIRSA always runs the full-domain analysis.
 
 If no path is given, runs:
   examples/safe4u_final_numeric
@@ -26,16 +28,20 @@ USAGE
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --domain)
+    --debug)
+      debug=1
+      shift
+      ;;
+    --edition)
       if [[ $# -lt 2 ]]; then
-        echo "error: --domain requires a value" >&2
+        echo "error: --edition requires a value" >&2
         exit 2
       fi
-      domain="$2"
+      edition="$2"
       shift 2
       ;;
-    --domain=*)
-      domain="${1#--domain=}"
+    --edition=*)
+      edition="${1#--edition=}"
       shift
       ;;
     --fail-fast)
@@ -81,14 +87,6 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-case "$domain" in
-  all|interval|nullptr) ;;
-  *)
-    echo "error: unsupported domain '$domain'" >&2
-    exit 2
-    ;;
-esac
-
 if [[ ${#targets[@]} -eq 0 ]]; then
   targets=(
     "examples/safe4u_final_numeric"
@@ -108,6 +106,11 @@ fi
 driver="$repo_root/target/debug/mirsa-driver"
 sysroot="$(rustc --print sysroot)"
 export LD_LIBRARY_PATH="$sysroot/lib:${LD_LIBRARY_PATH:-}"
+
+tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/mirsa-examples.XXXXXX")"
+trap 'rm -rf "$tmp_dir"' EXIT
+stdout_file="$tmp_dir/stdout"
+stderr_file="$tmp_dir/stderr"
 
 files=()
 for target in "${targets[@]}"; do
@@ -151,14 +154,19 @@ if [[ "$verify" -eq 1 ]]; then
   done < "$expected_file"
 fi
 
-echo "Running ${#files[@]} example(s) with --domain $domain"
+driver_args=("--edition=$edition")
+if [[ "$debug" -eq 1 ]]; then
+  driver_args+=(--debug)
+fi
+
+echo "Running ${#files[@]} example(s) with full-domain analysis (edition $edition)"
 for file in "${files[@]}"; do
   printf '[%03d/%03d] %s ... ' "$((passed + failed + 1))" "${#files[@]}" "$file"
-  if ! "$driver" --domain "$domain" "$file" >/tmp/mirsa-example.out 2>/tmp/mirsa-example.err; then
+  if ! "$driver" "${driver_args[@]}" "$file" >"$stdout_file" 2>"$stderr_file"; then
     echo "FAILED"
     failed=$((failed + 1))
     failures+=("$file")
-    sed 's/^/    /' /tmp/mirsa-example.err >&2
+    sed 's/^/    /' "$stderr_file" >&2
     if [[ "$fail_fast" -eq 1 ]]; then
       break
     fi
@@ -178,7 +186,7 @@ for file in "${files[@]}"; do
     fi
 
     actual="$(
-      sed -n 's/.*warning\[\([^]]*\)\].*/\1/p' /tmp/mirsa-example.out /tmp/mirsa-example.err \
+      sed -n 's/.*warning\[\([^]]*\)\].*/\1/p' "$stdout_file" "$stderr_file" \
         | paste -sd, -
     )"
     if [[ -z "$actual" ]]; then
@@ -203,8 +211,6 @@ for file in "${files[@]}"; do
     passed=$((passed + 1))
   fi
 done
-
-rm -f /tmp/mirsa-example.out /tmp/mirsa-example.err
 
 echo
 echo "Summary: $passed passed, $failed failed"

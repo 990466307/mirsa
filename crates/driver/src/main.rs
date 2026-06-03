@@ -5,20 +5,14 @@ extern crate rustc_hir;
 extern crate rustc_interface;
 extern crate rustc_middle;
 
-use mirsa_core::mir::collect_body_places;
+use mirsa_analysis::reduced_product::AnalysisOptions;
+use mirsa_core::mir::collect_interval_places;
 
 use rustc_driver::{Callbacks, Compilation, run_compiler};
 use rustc_middle::ty::TyCtxt;
 
 use rustc_hir::def_id::DefId;
 use rustc_middle::mir::Body;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum DomainSelection {
-    All,
-    Interval,
-    Nullptr,
-}
 
 /// 打印 MIR：
 /// - 函数名
@@ -44,7 +38,7 @@ pub fn print_mir_simple<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId, body: &Body<'tcx
 }
 
 struct MirCallbacks {
-    domain: DomainSelection,
+    options: AnalysisOptions,
 }
 
 impl Callbacks for MirCallbacks {
@@ -58,34 +52,17 @@ impl Callbacks for MirCallbacks {
         for def_id in fns {
             let body = mirsa_core::mir::get_optimized_mir(tcx, def_id);
             let cfg = mirsa_core::cfg::build_cfg(body);
-            let places = collect_body_places(tcx, body);
+            let places = collect_interval_places(tcx, body);
             let ptr_places = mirsa_core::mir::collect_ptr_places(tcx, body);
-            let ref_places = mirsa_core::mir::collect_ref_places(tcx, body);
-            match self.domain {
-                DomainSelection::All => {
-                    mirsa_domains::combined::run_combined(
-                        tcx,
-                        def_id,
-                        body,
-                        &cfg,
-                        &places,
-                        &ptr_places,
-                    );
-                }
-                DomainSelection::Interval => {
-                    mirsa_domains::interval::run_interval(tcx, def_id, body, &cfg, &places);
-                }
-                DomainSelection::Nullptr => {
-                    mirsa_domains::nullptr::run_nullptr(
-                        tcx,
-                        def_id,
-                        body,
-                        &cfg,
-                        &ptr_places,
-                        &ref_places,
-                    );
-                }
-            }
+            mirsa_analysis::reduced_product::run_combined(
+                tcx,
+                def_id,
+                body,
+                &cfg,
+                &places,
+                &ptr_places,
+                self.options,
+            );
         }
 
         Compilation::Continue
@@ -117,39 +94,39 @@ fn normalize_rustc_args(mut args: Vec<String>) -> Vec<String> {
     args
 }
 
-fn parse_driver_args(args: Vec<String>) -> (DomainSelection, Vec<String>) {
-    let mut domain = DomainSelection::All;
+fn parse_driver_args(args: Vec<String>) -> (AnalysisOptions, Vec<String>) {
+    let mut options = AnalysisOptions::default();
     let mut filtered = Vec::with_capacity(args.len());
     let mut i = 0usize;
     while i < args.len() {
-        if args[i] == "--domain" {
-            let Some(value) = args.get(i + 1) else {
-                eprintln!("error: missing value for `--domain`");
+        match args[i].as_str() {
+            "--debug" => {
+                options.debug = true;
+                i += 1;
+                continue;
+            }
+            "--no-debug" => {
+                options.debug = false;
+                i += 1;
+                continue;
+            }
+            "--domain" => {
+                eprintln!(
+                    "error: `--domain` is no longer supported; full-domain analysis is always enabled"
+                );
                 std::process::exit(2);
-            };
-            domain = match value.as_str() {
-                "all" => DomainSelection::All,
-                "interval" => DomainSelection::Interval,
-                "nullptr" => DomainSelection::Nullptr,
-                other => {
-                    eprintln!(
-                        "error: unsupported domain `{other}`, expected one of: all, interval, nullptr"
-                    );
-                    std::process::exit(2);
-                }
-            };
-            i += 2;
-            continue;
+            }
+            _ => {}
         }
         filtered.push(args[i].clone());
         i += 1;
     }
-    (domain, filtered)
+    (options, filtered)
 }
 
 fn main() {
-    let (domain, args) = parse_driver_args(std::env::args().collect());
+    let (options, args) = parse_driver_args(std::env::args().collect());
     let args = normalize_rustc_args(args);
-    let mut callbacks = MirCallbacks { domain };
+    let mut callbacks = MirCallbacks { options };
     run_compiler(&args, &mut callbacks);
 }

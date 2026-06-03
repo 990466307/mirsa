@@ -1,24 +1,18 @@
-use crate::framework::forward::DomainState;
-use crate::framework::printer::StateEntries;
-use crate::framework::symbolic::{SymbolicState, join_display_places};
+use mirsa_framework::forward::DomainState;
+use mirsa_framework::printer::StateEntries;
+use mirsa_relations::symbolic::{SymbolicState, join_display_places};
 use rustc_middle::mir::Place;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use super::abstract_value::{NullPtr, join};
-use crate::framework::access_path::{AccessPath, AccessPathElem};
+use mirsa_framework::access_path::{AccessPath, AccessPathElem};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NullPtrState<'tcx> {
     facts: HashMap<AccessPath, NullPtr>,
     display_places: HashMap<AccessPath, Place<'tcx>>,
     debug: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct NullPtrAnalysisState<'tcx> {
-    pub symbolic: SymbolicState<'tcx>,
-    pub nullptr: NullPtrState<'tcx>,
 }
 
 impl<'tcx> NullPtrState<'tcx> {
@@ -54,67 +48,69 @@ impl<'tcx> NullPtrState<'tcx> {
         }
     }
 
-    pub fn debug_map(&self, label: &str) {
-        if !self.debug {
-            return;
-        }
-
-        let mut entries: Vec<_> = self
-            .facts
-            .iter()
-            .map(|(path, value)| (path.to_string(), value.to_string()))
-            .collect();
-        entries.sort_by(|a, b| a.0.cmp(&b.0));
-
-        eprintln!("[nullptr] {label}:");
-        if entries.is_empty() {
-            eprintln!("[nullptr]   <empty>");
-            return;
-        }
-        for (path, value) in entries {
-            eprintln!("[nullptr]   {path} => {value}");
-        }
-    }
-
-    pub fn access_path_for_place(&self, place: Place<'tcx>) -> Option<AccessPath> {
-        Self::path_for_place(place)
-    }
-
     pub fn path_for_place(place: Place<'tcx>) -> Option<AccessPath> {
         AccessPath::from_place(place)
     }
 
-    pub fn contains_place(&self, place: Place<'tcx>) -> bool {
-        self.access_path_for_place(place)
-            .is_some_and(|path| self.facts.contains_key(&path))
-    }
-
-    pub fn get_path(&self, path: &AccessPath) -> NullPtr {
-        self.facts.get(path).copied().unwrap_or(NullPtr::Bot)
+    pub fn access_path_for_place_resolved(
+        &self,
+        symbolic: &SymbolicState<'tcx>,
+        place: Place<'tcx>,
+    ) -> Option<AccessPath> {
+        Self::path_for_place(place).map(|path| symbolic.normalize_path(&path))
     }
 
     pub fn value_or_maybe(&self, path: &AccessPath) -> NullPtr {
-        if let Some(value) = self.facts.get(path).copied() {
+        self.lookup(path).unwrap_or_else(|| {
+            self.debug(format_args!(
+                "untracked nullptr read {path}; using MaybeNull"
+            ));
+            NullPtr::MaybeNull
+        })
+    }
+
+    pub fn read_value_or_maybe(&mut self, path: &AccessPath) -> NullPtr {
+        if let Some(value) = self.lookup(path) {
             return value;
         }
 
-        let mut found = false;
-        let mut value = NullPtr::Bot;
+        self.debug(format_args!(
+            "untracked nullptr read {path}; initializing to MaybeNull"
+        ));
+        self.facts.insert(path.clone(), NullPtr::MaybeNull);
+        NullPtr::MaybeNull
+    }
+
+    fn lookup(&self, path: &AccessPath) -> Option<NullPtr> {
+        let exact = self.facts.get(path).copied();
+        let mut value = exact;
         for (candidate, candidate_value) in &self.facts {
-            if candidate.matches_pattern(path) {
-                found = true;
-                value = join(value, *candidate_value);
+            if candidate == path {
+                continue;
+            }
+            if path.matches_pattern(candidate) {
+                value = Some(join(value.unwrap_or(NullPtr::Bot), *candidate_value));
             }
         }
-        if found { value } else { NullPtr::MaybeNull }
+        value
     }
 
     pub fn set_path(&mut self, path: AccessPath, value: NullPtr) {
         self.set_path_with_place(path, None, value);
     }
 
-    pub fn set_place_path(&mut self, place: Place<'tcx>, value: NullPtr) {
-        if let Some(path) = self.access_path_for_place(place) {
+    pub fn join_path(&mut self, path: AccessPath, value: NullPtr) {
+        let current = self.lookup(&path).unwrap_or(NullPtr::Bot);
+        self.set_path(path, join(current, value));
+    }
+
+    pub fn set_place_path_resolved(
+        &mut self,
+        symbolic: &SymbolicState<'tcx>,
+        place: Place<'tcx>,
+        value: NullPtr,
+    ) {
+        if let Some(path) = self.access_path_for_place_resolved(symbolic, place) {
             self.set_path_with_place(path, Some(place), value);
         }
     }
@@ -134,17 +130,18 @@ impl<'tcx> NullPtrState<'tcx> {
         }
     }
 
-    pub fn copy_place_from_path(
+    pub fn copy_place_from_path_resolved(
         &mut self,
+        symbolic: &SymbolicState<'tcx>,
         place: Place<'tcx>,
         src: &AccessPath,
         default: NullPtr,
         reason: &str,
     ) {
-        let Some(dst) = self.access_path_for_place(place) else {
+        let Some(dst) = self.access_path_for_place_resolved(symbolic, place) else {
             return;
         };
-        self.display_places.insert(dst.clone(), place);
+        self.display_places.entry(dst.clone()).or_insert(place);
         self.copy_subtree(&dst, src, default, reason);
     }
 
@@ -198,7 +195,7 @@ impl<'tcx> NullPtrState<'tcx> {
         for suffix in suffixes {
             let dst_path = dst.join_suffix(&suffix);
             let src_path = src.join_suffix(&suffix);
-            let value = match self.value_or_maybe(&src_path) {
+            let value = match self.read_value_or_maybe(&src_path) {
                 NullPtr::Bot => default,
                 value => value,
             };
@@ -227,7 +224,7 @@ impl<'tcx> NullPtrState<'tcx> {
             return;
         }
         for target in targets {
-            let current = self.get_path(&target);
+            let current = self.value_or_maybe(&target);
             self.set_path(target, join(current, value));
         }
     }
@@ -275,7 +272,7 @@ impl<'tcx> StateEntries<'tcx> for NullPtrState<'tcx> {
         self.display_places
             .keys()
             .filter_map(|path| {
-                let value = self.get_path(path);
+                let value = self.value_or_maybe(path);
                 if value == NullPtr::Bot {
                     None
                 } else {
@@ -286,10 +283,10 @@ impl<'tcx> StateEntries<'tcx> for NullPtrState<'tcx> {
     }
 
     fn should_print_entry(&self, place: Place<'tcx>) -> bool {
-        let Some(path) = self.access_path_for_place(place) else {
+        let Some(path) = Self::path_for_place(place) else {
             return false;
         };
-        self.get_path(&path) != NullPtr::Bot
+        self.value_or_maybe(&path) != NullPtr::Bot
     }
 }
 
@@ -318,43 +315,5 @@ impl<'tcx> NullPtrState<'tcx> {
                 .iter()
                 .map(|(path, place)| (path.clone(), *place)),
         );
-    }
-}
-
-impl<'tcx> NullPtrAnalysisState<'tcx> {
-    pub fn new(nullptr: NullPtrState<'tcx>) -> Self {
-        let mut symbolic = SymbolicState::new();
-        nullptr.merge_display_places_into(&mut symbolic);
-        Self { symbolic, nullptr }
-    }
-}
-
-impl<'tcx> DomainState<'tcx> for NullPtrAnalysisState<'tcx> {
-    fn join(left: &Self, right: &Self) -> Self {
-        Self {
-            symbolic: SymbolicState::join(&left.symbolic, &right.symbolic),
-            nullptr: NullPtrState::join(&left.nullptr, &right.nullptr),
-        }
-    }
-
-    fn state_changed(previous: &Self, next: &Self) -> bool {
-        NullPtrState::state_changed(&previous.nullptr, &next.nullptr)
-            || previous.symbolic != next.symbolic
-    }
-}
-
-impl<'tcx> fmt::Display for NullPtrAnalysisState<'tcx> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.nullptr.fmt(f)
-    }
-}
-
-impl<'tcx> StateEntries<'tcx> for NullPtrAnalysisState<'tcx> {
-    fn entries(&self) -> Vec<(Place<'tcx>, String)> {
-        self.nullptr.entries()
-    }
-
-    fn should_print_entry(&self, place: Place<'tcx>) -> bool {
-        self.nullptr.should_print_entry(place)
     }
 }
