@@ -6,7 +6,7 @@ extern crate rustc_interface;
 extern crate rustc_middle;
 
 use mirsa_analysis::reduced_product::AnalysisOptions;
-use mirsa_core::mir::collect_interval_places;
+use mirsa_core::mir::{collect_body_places, collect_interval_places};
 
 use rustc_driver::{Callbacks, Compilation, run_compiler};
 use rustc_middle::ty::TyCtxt;
@@ -52,6 +52,7 @@ impl Callbacks for MirCallbacks {
         for def_id in fns {
             let body = mirsa_core::mir::get_optimized_mir(tcx, def_id);
             let cfg = mirsa_core::cfg::build_cfg(body);
+            let all_places = collect_body_places(tcx, body);
             let places = collect_interval_places(tcx, body);
             let ptr_places = mirsa_core::mir::collect_ptr_places(tcx, body);
             mirsa_analysis::reduced_product::run_combined(
@@ -60,6 +61,7 @@ impl Callbacks for MirCallbacks {
                 body,
                 &cfg,
                 &places,
+                &all_places,
                 &ptr_places,
                 self.options,
             );

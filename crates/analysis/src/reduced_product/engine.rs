@@ -25,6 +25,7 @@ pub struct AnalysisOptions {
 
 struct CombinedSemantics<'a, 'tcx> {
     places: &'a [Place<'tcx>],
+    all_places: &'a [Place<'tcx>],
     pointer_places: &'a [Place<'tcx>],
     interval_debug: bool,
     nullptr_debug: bool,
@@ -37,7 +38,12 @@ impl<'a, 'tcx> ForwardSemantics<'tcx> for CombinedSemantics<'a, 'tcx> {
 
     fn bottom(&self, body: &Body<'tcx>) -> Self::State {
         CombinedState::new_with_debug(
-            IntervalState::new_bot_state(self.places, body.arg_count, self.interval_debug),
+            IntervalState::new_bot_state(
+                self.places,
+                self.all_places,
+                body.arg_count,
+                self.interval_debug,
+            ),
             NullPtrState::new_bot_state(self.pointer_places, body.arg_count, self.nullptr_debug),
             self.symbolic_debug,
             self.reduce_debug,
@@ -135,12 +141,12 @@ pub fn run_combined<'tcx>(
     body: &Body<'tcx>,
     cfg: &Cfg,
     places: &[Place<'tcx>],
+    all_places: &[Place<'tcx>],
     pointer_places: &[Place<'tcx>],
     options: AnalysisOptions,
 ) {
     let interval_config = load_domain_engine_config("interval");
     let nullptr_config = load_domain_engine_config("nullptr");
-    let debug = options.debug;
     let warn_on_maybe = load_analysis_bool_config("warn_on_maybe", false);
 
     let max_iterations = match (
@@ -151,27 +157,45 @@ pub fn run_combined<'tcx>(
         (Some(value), None) | (None, Some(value)) => Some(value),
         (None, None) => None,
     };
-    let semantics = CombinedSemantics {
-        places,
-        pointer_places,
-        interval_debug: debug,
-        nullptr_debug: debug,
-        symbolic_debug: debug,
-        reduce_debug: debug,
-    };
-    let result = run_path_sensitive_analysis(
+    let result = analyze_combined_with_config(
         tcx,
         body,
         cfg,
-        &semantics,
+        places,
+        all_places,
+        pointer_places,
         PathForwardAnalysisConfig {
             max_paths: interval_config.max_paths.max(nullptr_config.max_paths),
             widen_after_iterations: max_iterations,
         },
+        options,
     );
 
     print_function_header(tcx, def_id);
     print_unsafe_pre_states(tcx, body, &result);
 
     emit_combined_warnings(tcx, body, &result, warn_on_maybe);
+}
+
+pub fn analyze_combined_with_config<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    body: &Body<'tcx>,
+    cfg: &Cfg,
+    places: &[Place<'tcx>],
+    all_places: &[Place<'tcx>],
+    pointer_places: &[Place<'tcx>],
+    analysis_config: PathForwardAnalysisConfig,
+    options: AnalysisOptions,
+) -> PathForwardAnalysisResult<CombinedState<'tcx>> {
+    let debug = options.debug;
+    let semantics = CombinedSemantics {
+        places,
+        all_places,
+        pointer_places,
+        interval_debug: debug,
+        nullptr_debug: debug,
+        symbolic_debug: debug,
+        reduce_debug: debug,
+    };
+    run_path_sensitive_analysis(tcx, body, cfg, &semantics, analysis_config)
 }

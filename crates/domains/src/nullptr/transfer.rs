@@ -30,7 +30,7 @@ pub fn get_tracked_value<'tcx>(
     let Some(path) = st.access_path_for_place_resolved(symbolic, place) else {
         return NullPtr::MaybeNull;
     };
-    let value = st.read_value_or_maybe(&path);
+    let value = st.value_or_maybe(&path);
     st.set_place_path_resolved(symbolic, place, value);
     if value == NullPtr::Bot && is_ref_like(ty) {
         NullPtr::NonNull

@@ -65,13 +65,7 @@ fn collect_immediate_projections<'tcx>(
 
 impl<'tcx> Visitor<'tcx> for PlaceCollector<'tcx> {
     fn visit_place(&mut self, place: &Place<'tcx>, context: PlaceContext, location: Location) {
-        let has_runtime_index = place
-            .projection
-            .iter()
-            .any(|elem| matches!(elem, ProjectionElem::Index(_)));
-        if !has_runtime_index {
-            self.places.insert(*place);
-        }
+        self.places.insert(*place);
         self.super_place(place, context, location);
     }
 }
@@ -102,20 +96,6 @@ pub fn collect_interval_places<'tcx>(tcx: TyCtxt<'tcx>, body: &Body<'tcx>) -> Ve
     collect_body_places(tcx, body)
         .into_iter()
         .filter(|place| is_interval_scalar_ty(place.ty(&body.local_decls, tcx).ty))
-        .collect()
-}
-
-pub fn collect_ref_places<'tcx>(tcx: TyCtxt<'tcx>, body: &Body<'tcx>) -> Vec<Place<'tcx>> {
-    let _ = tcx;
-    body.local_decls
-        .iter_enumerated()
-        .filter_map(|(local, decl)| {
-            if matches!(decl.ty.kind(), TyKind::Ref(_, _, _)) {
-                Some(Place::from(local))
-            } else {
-                None
-            }
-        })
         .collect()
 }
 

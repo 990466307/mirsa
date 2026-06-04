@@ -95,14 +95,6 @@ impl<'tcx> SymbolicState<'tcx> {
         }
     }
 
-    pub fn display_place(&self, path: &AccessPath) -> Option<Place<'tcx>> {
-        self.display_places.get(path).copied()
-    }
-
-    pub fn display_paths(&self) -> impl Iterator<Item = &AccessPath> {
-        self.display_places.keys()
-    }
-
     pub fn kill_place(&mut self, place: Place<'tcx>) {
         if let Some(path) = AccessPath::from_place(place) {
             self.eq.kill(path.clone());

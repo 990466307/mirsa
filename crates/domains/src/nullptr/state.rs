@@ -69,18 +69,6 @@ impl<'tcx> NullPtrState<'tcx> {
         })
     }
 
-    pub fn read_value_or_maybe(&mut self, path: &AccessPath) -> NullPtr {
-        if let Some(value) = self.lookup(path) {
-            return value;
-        }
-
-        self.debug(format_args!(
-            "untracked nullptr read {path}; initializing to MaybeNull"
-        ));
-        self.facts.insert(path.clone(), NullPtr::MaybeNull);
-        NullPtr::MaybeNull
-    }
-
     fn lookup(&self, path: &AccessPath) -> Option<NullPtr> {
         let exact = self.facts.get(path).copied();
         let mut value = exact;
@@ -100,7 +88,10 @@ impl<'tcx> NullPtrState<'tcx> {
     }
 
     pub fn join_path(&mut self, path: AccessPath, value: NullPtr) {
-        let current = self.lookup(&path).unwrap_or(NullPtr::Bot);
+        let Some(current) = self.lookup(&path) else {
+            self.debug(format_args!("untracked nullptr join-write {path}; ignored"));
+            return;
+        };
         self.set_path(path, join(current, value));
     }
 
@@ -121,6 +112,10 @@ impl<'tcx> NullPtrState<'tcx> {
         display_place: Option<Place<'tcx>>,
         value: NullPtr,
     ) {
+        if !self.facts.contains_key(&path) {
+            self.debug(format_args!("untracked nullptr write {path}; ignored"));
+            return;
+        }
         let old = self.facts.insert(path.clone(), value);
         if old != Some(value) && value != NullPtr::Bot {
             self.debug(format_args!("fact {path} := {value}"));
@@ -141,6 +136,12 @@ impl<'tcx> NullPtrState<'tcx> {
         let Some(dst) = self.access_path_for_place_resolved(symbolic, place) else {
             return;
         };
+        if !self.facts.contains_key(&dst) {
+            self.debug(format_args!(
+                "untracked nullptr copy destination {dst}; ignored"
+            ));
+            return;
+        }
         self.display_places.entry(dst.clone()).or_insert(place);
         self.copy_subtree(&dst, src, default, reason);
     }
@@ -195,7 +196,7 @@ impl<'tcx> NullPtrState<'tcx> {
         for suffix in suffixes {
             let dst_path = dst.join_suffix(&suffix);
             let src_path = src.join_suffix(&suffix);
-            let value = match self.read_value_or_maybe(&src_path) {
+            let value = match self.value_or_maybe(&src_path) {
                 NullPtr::Bot => default,
                 value => value,
             };

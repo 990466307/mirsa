@@ -3,7 +3,7 @@ use mirsa_framework::forward::DomainState;
 use mirsa_framework::printer::StateEntries;
 use mirsa_relations::symbolic::{SymbolicState, join_display_places};
 use rustc_middle::mir::Place;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use super::abstract_value::{Interval, join, widen};
@@ -12,6 +12,7 @@ use super::abstract_value::{Interval, join, widen};
 pub struct IntervalState<'tcx> {
     interval: HashMap<AccessPath, Interval>,
     len: HashMap<AccessPath, Interval>,
+    tracked_len: HashSet<AccessPath>,
     display_places: HashMap<AccessPath, Place<'tcx>>,
     debug: bool,
 }
@@ -21,14 +22,37 @@ impl<'tcx> IntervalState<'tcx> {
         IntervalState {
             interval: HashMap::new(),
             len: HashMap::new(),
+            tracked_len: HashSet::new(),
             display_places: HashMap::new(),
             debug,
         }
     }
 
-    pub fn new_bot_state(places: &[Place<'tcx>], arg_count: usize, debug: bool) -> Self {
+    pub fn new_bot_state(
+        places: &[Place<'tcx>],
+        len_places: &[Place<'tcx>],
+        arg_count: usize,
+        debug: bool,
+    ) -> Self {
         let mut interval = HashMap::new();
+        let mut len = HashMap::new();
+        let mut tracked_len = HashSet::new();
         let mut display_places = HashMap::new();
+
+        for place in len_places {
+            let Some(path) = Self::path_for_place(*place) else {
+                continue;
+            };
+            let local_idx = place.local.index();
+            let value = if local_idx >= 1 && local_idx <= arg_count {
+                Interval::top()
+            } else {
+                Interval::empty()
+            };
+            tracked_len.insert(path.clone());
+            len.insert(path.clone(), value);
+            display_places.insert(path, *place);
+        }
 
         for place in places {
             let Some(path) = Self::path_for_place(*place) else {
@@ -46,7 +70,8 @@ impl<'tcx> IntervalState<'tcx> {
 
         IntervalState {
             interval,
-            len: HashMap::new(),
+            len,
+            tracked_len,
             display_places,
             debug,
         }
@@ -138,23 +163,16 @@ impl<'tcx> IntervalState<'tcx> {
         };
         let path = symbolic.normalize_path(&path);
         if let Some(value) = self.lookup_interval(&path) {
-            if self.interval.get(&path).copied() != Some(value) {
+            if self.interval.contains_key(&path) && self.interval.get(&path).copied() != Some(value)
+            {
                 self.interval.insert(path.clone(), value);
+                self.display_places.entry(path).or_insert(place);
             }
-            self.display_places.entry(path).or_insert(place);
             return value;
         }
 
-        self.display_places.entry(path.clone()).or_insert(place);
-        *self.interval.entry(path).or_insert_with(Interval::top)
-    }
-
-    pub fn set_interval(&mut self, place: Place<'tcx>, interval: Interval) {
-        let Some(path) = Self::path_for_place(place) else {
-            return;
-        };
-        self.interval.insert(path.clone(), interval);
-        self.display_places.insert(path, place);
+        self.debug(format_args!("untracked interval read {path}; using top"));
+        Interval::top()
     }
 
     pub fn set_interval_resolved(
@@ -167,6 +185,10 @@ impl<'tcx> IntervalState<'tcx> {
             return;
         };
         let path = symbolic.normalize_path(&path);
+        if !self.interval.contains_key(&path) {
+            self.debug(format_args!("untracked interval write {path}; ignored"));
+            return;
+        }
         self.interval.insert(path.clone(), interval);
         self.display_places.entry(path).or_insert(place);
     }
@@ -181,11 +203,12 @@ impl<'tcx> IntervalState<'tcx> {
             return;
         };
         let path = symbolic.normalize_path(&path);
-        let old = self
-            .interval
-            .get(&path)
-            .copied()
-            .unwrap_or_else(Interval::top);
+        let Some(old) = self.interval.get(&path).copied() else {
+            self.debug(format_args!(
+                "untracked interval join-write {path}; ignored"
+            ));
+            return;
+        };
         let value = join(&old, &interval);
         self.interval.insert(path.clone(), value);
         self.display_places.entry(path).or_insert(place);
@@ -193,7 +216,10 @@ impl<'tcx> IntervalState<'tcx> {
 
     pub fn get_len(&self, place: &Place<'tcx>) -> Option<Interval> {
         let path = Self::path_for_place(*place)?;
-        self.len.get(&path).copied()
+        self.len
+            .get(&path)
+            .copied()
+            .filter(|value| !value.is_empty() && *value != Interval::top())
     }
 
     pub fn read_len_resolved_or_top(
@@ -205,18 +231,11 @@ impl<'tcx> IntervalState<'tcx> {
             return Interval::top();
         };
         let path = symbolic.normalize_path(&path);
-        if !self.len.contains_key(&path) {
-            self.display_places.entry(path.clone()).or_insert(place);
+        if !self.tracked_len.contains(&path) {
+            self.debug(format_args!("untracked len read {path}; using top"));
+            return Interval::top();
         }
-        *self.len.entry(path).or_insert_with(Interval::top)
-    }
-
-    pub fn set_len(&mut self, place: Place<'tcx>, len: Interval) {
-        let Some(path) = Self::path_for_place(place) else {
-            return;
-        };
-        self.len.insert(path.clone(), len);
-        self.display_places.insert(path, place);
+        self.len.get(&path).copied().unwrap_or_else(Interval::top)
     }
 
     pub fn set_len_resolved(
@@ -229,22 +248,23 @@ impl<'tcx> IntervalState<'tcx> {
             return;
         };
         let path = symbolic.normalize_path(&path);
+        if !self.tracked_len.contains(&path) {
+            self.debug(format_args!("untracked len write {path}; ignored"));
+            return;
+        }
         self.len.insert(path.clone(), len);
         self.display_places.entry(path).or_insert(place);
-    }
-
-    pub fn clear_len(&mut self, place: &Place<'tcx>) {
-        let Some(path) = Self::path_for_place(*place) else {
-            return;
-        };
-        self.len.remove(&path);
     }
 
     pub fn clear_len_resolved(&mut self, symbolic: &SymbolicState<'tcx>, place: &Place<'tcx>) {
         let Some(path) = Self::path_for_place(*place) else {
             return;
         };
-        self.len.remove(&symbolic.normalize_path(&path));
+        let path = symbolic.normalize_path(&path);
+        if !self.tracked_len.contains(&path) {
+            return;
+        }
+        self.len.remove(&path);
     }
 
     pub fn all_fact_places(&self) -> Vec<Place<'tcx>> {
@@ -300,9 +320,10 @@ pub fn join_state<'tcx>(a: &IntervalState<'tcx>, b: &IntervalState<'tcx>) -> Int
         let ib = b.interval.get(k).copied().unwrap_or_else(Interval::empty);
         out.interval.insert(k.clone(), join(&ia, &ib));
     }
-    for k in a.len.keys().chain(b.len.keys()) {
-        let ia = a.len.get(k).copied().unwrap_or_else(Interval::empty);
-        let ib = b.len.get(k).copied().unwrap_or_else(Interval::empty);
+    out.tracked_len = a.tracked_len.union(&b.tracked_len).cloned().collect();
+    for k in &out.tracked_len {
+        let ia = a.len.get(k).copied().unwrap_or_else(Interval::top);
+        let ib = b.len.get(k).copied().unwrap_or_else(Interval::top);
         out.len.insert(k.clone(), join(&ia, &ib));
     }
     out.display_places = join_display_places(&a.display_places, &b.display_places);
@@ -317,9 +338,10 @@ pub fn widen_state<'tcx>(a: &IntervalState<'tcx>, b: &IntervalState<'tcx>) -> In
         let widened = widen(&ia, &ib);
         out.interval.insert(k.clone(), widened);
     }
-    for k in a.len.keys().chain(b.len.keys()) {
-        let ia = a.len.get(k).copied().unwrap_or_else(Interval::empty);
-        let ib = b.len.get(k).copied().unwrap_or_else(Interval::empty);
+    out.tracked_len = a.tracked_len.union(&b.tracked_len).cloned().collect();
+    for k in &out.tracked_len {
+        let ia = a.len.get(k).copied().unwrap_or_else(Interval::top);
+        let ib = b.len.get(k).copied().unwrap_or_else(Interval::top);
         out.len.insert(k.clone(), widen(&ia, &ib));
     }
     out.display_places = join_display_places(&a.display_places, &b.display_places);

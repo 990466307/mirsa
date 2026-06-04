@@ -234,6 +234,9 @@ fn place_len<'tcx>(
     place: Place<'tcx>,
 ) -> Interval {
     let ty = place.ty(local_decls, tcx).ty;
+    if let Some(len) = static_len(tcx, ty) {
+        return len;
+    }
     if let Some(len) = st.get_len(&place) {
         return len;
     }
@@ -315,8 +318,7 @@ fn place_object_len<'tcx>(
     st: &IntervalState<'tcx>,
     place: Place<'tcx>,
 ) -> Option<Interval> {
-    st.get_len(&place)
-        .or_else(|| static_len(tcx, place.ty(local_decls, tcx).ty))
+    static_len(tcx, place.ty(local_decls, tcx).ty).or_else(|| st.get_len(&place))
 }
 
 fn operand_object_len<'tcx>(

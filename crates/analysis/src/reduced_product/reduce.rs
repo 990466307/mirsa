@@ -15,6 +15,8 @@ use mirsa_relations::symbolic::{SymbolicEffect, SymbolicExpr, SymbolicFact};
 use rustc_middle::mir::*;
 use rustc_middle::ty::{Ty, TyCtxt, TyKind};
 
+const MAX_PRECOLLECT_ARRAY_ELEMENTS: u64 = 32;
+
 impl<'tcx> CombinedState<'tcx> {
     pub fn synchronize_domains(&mut self) {
         self.sync_nullness_from_interval();
@@ -80,7 +82,7 @@ impl<'tcx> CombinedState<'tcx> {
                 .set_interval_resolved(&self.symbolic, dst, value);
         }
         if is_tracked(dst_ty) {
-            let value = self.read_indexed_nullptr(src);
+            let value = self.read_indexed_nullptr(tcx, local_decls, src);
             self.debug_reduce(format_args!("indexed read {:?} := {}", dst, value));
             self.nullptr
                 .set_place_path_resolved(&self.symbolic, dst, value);
@@ -96,6 +98,8 @@ impl<'tcx> CombinedState<'tcx> {
     ) {
         if let Some(resolved) = self.resolve_indexed_place(tcx, local_decls, place) {
             self.materialize_exact_write(tcx, local_decls, resolved, rvalue);
+        } else if let Some(candidates) = self.indexed_candidate_places(tcx, local_decls, place) {
+            self.materialize_candidate_writes(tcx, local_decls, &candidates, rvalue);
         } else {
             self.materialize_summary_write(tcx, local_decls, place, rvalue);
         }
@@ -162,6 +166,43 @@ impl<'tcx> CombinedState<'tcx> {
         }
     }
 
+    fn materialize_candidate_writes(
+        &mut self,
+        tcx: TyCtxt<'tcx>,
+        local_decls: &LocalDecls<'tcx>,
+        candidates: &[Place<'tcx>],
+        rvalue: &Rvalue<'tcx>,
+    ) {
+        let Some(first) = candidates.first().copied() else {
+            return;
+        };
+        let ty = first.ty(local_decls, tcx).ty;
+        if is_interval_scalar(ty) {
+            let value = eval_assign_rhs_interval(
+                tcx,
+                &mut self.interval,
+                &self.symbolic,
+                local_decls,
+                rvalue,
+            );
+            for place in candidates {
+                self.debug_reduce(format_args!("indexed weak write {:?} := {}", place, value));
+                self.interval
+                    .join_interval_resolved(&self.symbolic, *place, value);
+            }
+        }
+        if is_tracked(ty) {
+            let value = self.eval_nullptr_rvalue(tcx, local_decls, ty, rvalue);
+            for place in candidates {
+                let Some(path) = self.symbolic.normalize_place(*place) else {
+                    continue;
+                };
+                self.debug_reduce(format_args!("indexed weak write {path} := {}", value));
+                self.nullptr.join_path(path, value);
+            }
+        }
+    }
+
     fn resolve_indexed_place(
         &mut self,
         tcx: TyCtxt<'tcx>,
@@ -182,6 +223,9 @@ impl<'tcx> CombinedState<'tcx> {
                         TyKind::Array(_, len) => len.try_to_target_usize(tcx)? as u64,
                         _ => return None,
                     };
+                    if len > MAX_PRECOLLECT_ARRAY_ELEMENTS {
+                        return None;
+                    }
                     let idx = idx_iv.low as u64;
                     if idx >= len {
                         return None;
@@ -201,6 +245,60 @@ impl<'tcx> CombinedState<'tcx> {
         Some(resolved)
     }
 
+    fn indexed_candidate_places(
+        &mut self,
+        tcx: TyCtxt<'tcx>,
+        local_decls: &LocalDecls<'tcx>,
+        place: Place<'tcx>,
+    ) -> Option<Vec<Place<'tcx>>> {
+        let mut candidates = vec![Place::from(place.local)];
+        for elem in place.projection.iter() {
+            match elem {
+                ProjectionElem::Index(local) => {
+                    let idx_iv = self
+                        .interval
+                        .read_interval_resolved(&self.symbolic, Place::from(local));
+                    let mut next = Vec::new();
+                    for base in candidates {
+                        let len = match base.ty(local_decls, tcx).ty.kind() {
+                            TyKind::Array(_, len) => len.try_to_target_usize(tcx)? as u64,
+                            _ => return None,
+                        };
+                        if len > MAX_PRECOLLECT_ARRAY_ELEMENTS {
+                            return None;
+                        }
+                        if idx_iv.is_empty() || len == 0 {
+                            continue;
+                        }
+                        let low = idx_iv.low.max(0);
+                        let high = idx_iv.high.min(len as i128 - 1);
+                        if low > high {
+                            continue;
+                        }
+                        for idx in low as u64..=high as u64 {
+                            next.push(base.project_deeper(
+                                &[ProjectionElem::ConstantIndex {
+                                    offset: idx,
+                                    min_length: len,
+                                    from_end: false,
+                                }],
+                                tcx,
+                            ));
+                        }
+                    }
+                    candidates = next;
+                }
+                _ => {
+                    candidates = candidates
+                        .into_iter()
+                        .map(|base| base.project_deeper(&[elem], tcx))
+                        .collect();
+                }
+            }
+        }
+        Some(candidates)
+    }
+
     fn read_indexed_interval(
         &mut self,
         tcx: TyCtxt<'tcx>,
@@ -213,13 +311,19 @@ impl<'tcx> CombinedState<'tcx> {
                 .read_interval_resolved(&self.symbolic, resolved);
         }
 
+        if let Some(candidates) = self.indexed_candidate_places(tcx, local_decls, src) {
+            let mut value = Interval::empty();
+            let mut found = false;
+            for place in candidates {
+                let current = self.interval.read_interval_resolved(&self.symbolic, place);
+                value = join_interval(&value, &current);
+                found = true;
+            }
+            return if found { value } else { Interval::top() };
+        }
+
         let mut value = Interval::empty();
         let mut found = false;
-        for place in self.projected_interval_places_with_runtime_index(src) {
-            let current = self.interval.read_interval_resolved(&self.symbolic, place);
-            value = join_interval(&value, &current);
-            found = true;
-        }
         if let Some(summary) = self
             .interval
             .tracked_interval_resolved(&self.symbolic, &src)
@@ -230,7 +334,25 @@ impl<'tcx> CombinedState<'tcx> {
         if found { value } else { Interval::top() }
     }
 
-    fn read_indexed_nullptr(&self, src: Place<'tcx>) -> NullPtr {
+    fn read_indexed_nullptr(
+        &mut self,
+        tcx: TyCtxt<'tcx>,
+        local_decls: &LocalDecls<'tcx>,
+        src: Place<'tcx>,
+    ) -> NullPtr {
+        if let Some(candidates) = self.indexed_candidate_places(tcx, local_decls, src) {
+            let mut value = NullPtr::Bot;
+            let mut found = false;
+            for place in candidates {
+                let Some(path) = self.symbolic.normalize_place(place) else {
+                    continue;
+                };
+                value = join_nullptr(value, self.nullptr.value_or_maybe(&path));
+                found = true;
+            }
+            return if found { value } else { NullPtr::MaybeNull };
+        }
+
         let Some(pattern) = self.symbolic.normalize_place(src) else {
             return NullPtr::MaybeNull;
         };
@@ -243,14 +365,6 @@ impl<'tcx> CombinedState<'tcx> {
             }
         }
         if found { value } else { NullPtr::MaybeNull }
-    }
-
-    fn projected_interval_places_with_runtime_index(&self, place: Place<'tcx>) -> Vec<Place<'tcx>> {
-        self.interval
-            .interval_places()
-            .into_iter()
-            .filter(|candidate| runtime_index_place_matches(place, *candidate))
-            .collect()
     }
 
     fn eval_nullptr_rvalue(
@@ -869,20 +983,6 @@ fn interval_place_operand<'tcx>(
     } else {
         None
     }
-}
-
-fn runtime_index_place_matches<'tcx>(pattern: Place<'tcx>, candidate: Place<'tcx>) -> bool {
-    if pattern.local != candidate.local || pattern.projection.len() != candidate.projection.len() {
-        return false;
-    }
-    pattern
-        .projection
-        .iter()
-        .zip(candidate.projection.iter())
-        .all(|(left, right)| match left {
-            ProjectionElem::Index(_) => matches!(right, ProjectionElem::ConstantIndex { .. }),
-            _ => left == right,
-        })
 }
 
 fn meet_nullptr(current: NullPtr, wanted: NullPtr) -> Option<NullPtr> {
