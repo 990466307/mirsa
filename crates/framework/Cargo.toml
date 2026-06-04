@@ -1,12 +1,12 @@
 [package]
 name = "mirsa-framework"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 description = "Generic analysis framework for mirsa"
 license = "MIT"
 
 [dependencies]
-mirsa_core = { package = "mirsa-core", path = "../core", version = "0.2.0" }
+mirsa_core = { package = "mirsa-core", path = "../core", version = "0.2.1" }
 
 [package.metadata.rust-analyzer]
 rustc_private = true

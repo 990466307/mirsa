@@ -1,16 +1,16 @@
 [package]
 name = "mirsa-analysis"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 description = "Analysis orchestration for mirsa"
 license = "MIT"
 
 [dependencies]
-mirsa_core = { package = "mirsa-core", path = "../core", version = "0.2.0" }
-mirsa_contracts = { package = "mirsa-contracts", path = "../contracts", version = "0.2.0" }
-mirsa_domains = { package = "mirsa-domains", path = "../domains", version = "0.2.0" }
-mirsa_framework = { package = "mirsa-framework", path = "../framework", version = "0.2.0" }
-mirsa_relations = { package = "mirsa-relations", path = "../relations", version = "0.2.0" }
+mirsa_core = { package = "mirsa-core", path = "../core", version = "0.2.1" }
+mirsa_contracts = { package = "mirsa-contracts", path = "../contracts", version = "0.2.1" }
+mirsa_domains = { package = "mirsa-domains", path = "../domains", version = "0.2.1" }
+mirsa_framework = { package = "mirsa-framework", path = "../framework", version = "0.2.1" }
+mirsa_relations = { package = "mirsa-relations", path = "../relations", version = "0.2.1" }
 
 [package.metadata.rust-analyzer]
 rustc_private = true

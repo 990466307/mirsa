@@ -1,12 +1,12 @@
 [package]
 name = "mirsa-relations"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 description = "Relation domains for mirsa analyses"
 license = "MIT"
 
 [dependencies]
-mirsa_framework = { package = "mirsa-framework", path = "../framework", version = "0.2.0" }
+mirsa_framework = { package = "mirsa-framework", path = "../framework", version = "0.2.1" }
 
 [package.metadata.rust-analyzer]
 rustc_private = true

@@ -1,7 +1,7 @@
 warn_on_maybe = false
 
-interval.max_paths = 100
-interval.max_iterations = 100
+interval.max_paths = 8
+interval.max_iterations = 8
 
-nullptr.max_paths = 10
+nullptr.max_paths = 8
 nullptr.max_iterations = none
