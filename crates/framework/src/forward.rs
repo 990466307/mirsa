@@ -1,4 +1,5 @@
 use std::collections::{HashMap, VecDeque};
+use std::time::{Duration, Instant};
 
 use mirsa_core::cfg::Cfg;
 use rustc_middle::mir::{
@@ -10,6 +11,7 @@ use rustc_middle::ty::TyCtxt;
 pub struct PathForwardAnalysisConfig {
     pub max_paths: usize,
     pub widen_after_iterations: Option<u32>,
+    pub max_duration: Option<Duration>,
 }
 
 #[derive(Clone, Debug)]
@@ -125,6 +127,7 @@ where
 
     let mut path_id_seed = 0u32;
     let mut reached_max_paths = false;
+    let started_at = Instant::now();
 
     let mut path_map: HashMap<u32, PerPathState<A::State>> = HashMap::new();
     path_map.insert(
@@ -139,6 +142,13 @@ where
     );
 
     while let Some(item) = worklist.pop_front() {
+        if config
+            .max_duration
+            .is_some_and(|max_duration| started_at.elapsed() >= max_duration)
+        {
+            break;
+        }
+
         let in_state = {
             let current = path_map.get(&item.path_id).unwrap();
             if current.is_abstract {

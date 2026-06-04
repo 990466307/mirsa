@@ -167,6 +167,7 @@ pub fn run_combined<'tcx>(
         PathForwardAnalysisConfig {
             max_paths: interval_config.max_paths.max(nullptr_config.max_paths),
             widen_after_iterations: max_iterations,
+            max_duration: None,
         },
         options,
     );
