@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "mirsa"
-version = "0.2.1"
+version = "0.2.3"
 dependencies = [
  "mirsa-analysis",
  "mirsa-contracts",
@@ -16,7 +16,7 @@ dependencies = [
 
 [[package]]
 name = "mirsa-analysis"
-version = "0.2.1"
+version = "0.2.3"
 dependencies = [
  "mirsa-contracts",
  "mirsa-core",
@@ -27,7 +27,7 @@ dependencies = [
 
 [[package]]
 name = "mirsa-contracts"
-version = "0.2.1"
+version = "0.2.3"
 dependencies = [
  "mirsa-domains",
  "mirsa-framework",
@@ -36,11 +36,11 @@ dependencies = [
 
 [[package]]
 name = "mirsa-core"
-version = "0.2.1"
+version = "0.2.3"
 
 [[package]]
 name = "mirsa-domains"
-version = "0.2.1"
+version = "0.2.3"
 dependencies = [
  "mirsa-framework",
  "mirsa-relations",
@@ -48,7 +48,7 @@ dependencies = [
 
 [[package]]
 name = "mirsa-driver"
-version = "0.2.1"
+version = "0.2.3"
 dependencies = [
  "mirsa-analysis",
  "mirsa-core",
@@ -56,14 +56,14 @@ dependencies = [
 
 [[package]]
 name = "mirsa-framework"
-version = "0.2.1"
+version = "0.2.3"
 dependencies = [
  "mirsa-core",
 ]
 
 [[package]]
 name = "mirsa-relations"
-version = "0.2.1"
+version = "0.2.3"
 dependencies = [
  "mirsa-framework",
 ]

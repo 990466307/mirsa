@@ -1,14 +1,14 @@
 [package]
 name = "mirsa-contracts"
-version = "0.2.1"
+version = "0.2.3"
 edition = "2024"
 description = "Unsafe API contracts for mirsa"
 license = "MIT"
 
 [dependencies]
-mirsa_domains = { package = "mirsa-domains", path = "../domains", version = "0.2.1" }
-mirsa_framework = { package = "mirsa-framework", path = "../framework", version = "0.2.1" }
-mirsa_relations = { package = "mirsa-relations", path = "../relations", version = "0.2.1" }
+mirsa_domains = { package = "mirsa-domains", path = "../domains", version = "0.2.3" }
+mirsa_framework = { package = "mirsa-framework", path = "../framework", version = "0.2.3" }
+mirsa_relations = { package = "mirsa-relations", path = "../relations", version = "0.2.3" }
 
 [package.metadata.rust-analyzer]
 rustc_private = true
