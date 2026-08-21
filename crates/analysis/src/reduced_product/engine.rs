@@ -1,6 +1,8 @@
 use super::{branch, state::CombinedState};
 use crate::combined_warnings::emit_combined_warnings;
 use mirsa_core::cfg::Cfg;
+use mirsa_domains::allocation::AllocationState;
+use mirsa_domains::allocation::transfer as allocation_transfer;
 use mirsa_domains::interval::IntervalState;
 use mirsa_domains::interval::transfer as interval_transfer;
 use mirsa_domains::nullptr::NullPtrState;
@@ -24,11 +26,13 @@ pub struct AnalysisOptions {
 }
 
 struct CombinedSemantics<'a, 'tcx> {
+    tcx: TyCtxt<'tcx>,
     places: &'a [Place<'tcx>],
     all_places: &'a [Place<'tcx>],
     pointer_places: &'a [Place<'tcx>],
     interval_debug: bool,
     nullptr_debug: bool,
+    allocation_debug: bool,
     symbolic_debug: bool,
     reduce_debug: bool,
 }
@@ -39,15 +43,31 @@ impl<'a, 'tcx> ForwardSemantics<'tcx> for CombinedSemantics<'a, 'tcx> {
     fn bottom(&self, body: &Body<'tcx>) -> Self::State {
         CombinedState::new_with_debug(
             IntervalState::new_bot_state(
+                self.tcx,
+                &body.local_decls,
                 self.places,
                 self.all_places,
                 body.arg_count,
                 self.interval_debug,
             ),
             NullPtrState::new_bot_state(self.pointer_places, body.arg_count, self.nullptr_debug),
+            AllocationState::new_bottom(
+                self.tcx,
+                &body.local_decls,
+                self.all_places,
+                self.allocation_debug,
+            ),
             self.symbolic_debug,
             self.reduce_debug,
         )
+    }
+
+    fn entry_state(&self, body: &Body<'tcx>) -> Self::State {
+        let mut state = self.bottom(body);
+        state.allocation =
+            AllocationState::new_entry(self.tcx, body, self.all_places, self.allocation_debug);
+        state.synchronize_domains();
+        state
     }
 
     fn transfer_stmt(
@@ -60,6 +80,23 @@ impl<'a, 'tcx> ForwardSemantics<'tcx> for CombinedSemantics<'a, 'tcx> {
         symbolic_transfer::transfer_stmt(tcx, &mut st.symbolic, stmt, local_decls);
         interval_transfer::transfer_stmt(tcx, &st.symbolic, &mut st.interval, stmt, local_decls);
         nullptr_transfer::transfer_stmt(tcx, &st.symbolic, &mut st.nullptr, stmt, local_decls);
+        allocation_transfer::transfer_stmt(
+            tcx,
+            &st.symbolic,
+            &mut st.allocation,
+            stmt,
+            local_decls,
+            |operand| {
+                interval_transfer::eval_operand(
+                    tcx,
+                    local_decls,
+                    operand,
+                    &st.symbolic,
+                    &mut st.interval,
+                )
+            },
+        );
+        st.reduce_statement(tcx, local_decls, stmt);
         let _ = st.refine_with_path_facts(tcx, local_decls);
     }
 
@@ -85,6 +122,23 @@ impl<'a, 'tcx> ForwardSemantics<'tcx> for CombinedSemantics<'a, 'tcx> {
             term,
             local_decls,
         );
+        allocation_transfer::transfer_terminator(
+            tcx,
+            &st.symbolic,
+            &mut st.allocation,
+            term,
+            local_decls,
+            |operand| {
+                interval_transfer::eval_operand(
+                    tcx,
+                    local_decls,
+                    operand,
+                    &st.symbolic,
+                    &mut st.interval,
+                )
+            },
+        );
+        st.reduce_terminator(tcx, local_decls, term);
         let _ = st.refine_with_path_facts(tcx, local_decls);
     }
 
@@ -109,6 +163,23 @@ fn transfer_stmt<'tcx>(
     symbolic_transfer::transfer_stmt(tcx, &mut st.symbolic, stmt, local_decls);
     interval_transfer::transfer_stmt(tcx, &st.symbolic, &mut st.interval, stmt, local_decls);
     nullptr_transfer::transfer_stmt(tcx, &st.symbolic, &mut st.nullptr, stmt, local_decls);
+    allocation_transfer::transfer_stmt(
+        tcx,
+        &st.symbolic,
+        &mut st.allocation,
+        stmt,
+        local_decls,
+        |operand| {
+            interval_transfer::eval_operand(
+                tcx,
+                local_decls,
+                operand,
+                &st.symbolic,
+                &mut st.interval,
+            )
+        },
+    );
+    st.reduce_statement(tcx, local_decls, stmt);
     let _ = st.refine_with_path_facts(tcx, local_decls);
 }
 
@@ -147,16 +218,17 @@ pub fn run_combined<'tcx>(
 ) {
     let interval_config = load_domain_engine_config("interval");
     let nullptr_config = load_domain_engine_config("nullptr");
+    let allocation_config = load_domain_engine_config("allocation");
     let warn_on_maybe = load_analysis_bool_config("warn_on_maybe", false);
 
-    let max_iterations = match (
+    let max_iterations = [
         interval_config.max_iterations,
         nullptr_config.max_iterations,
-    ) {
-        (Some(left), Some(right)) => Some(left.min(right)),
-        (Some(value), None) | (None, Some(value)) => Some(value),
-        (None, None) => None,
-    };
+        allocation_config.max_iterations,
+    ]
+    .into_iter()
+    .flatten()
+    .min();
     let result = analyze_combined_with_config(
         tcx,
         body,
@@ -165,7 +237,10 @@ pub fn run_combined<'tcx>(
         all_places,
         pointer_places,
         PathForwardAnalysisConfig {
-            max_paths: interval_config.max_paths.max(nullptr_config.max_paths),
+            max_paths: interval_config
+                .max_paths
+                .max(nullptr_config.max_paths)
+                .max(allocation_config.max_paths),
             widen_after_iterations: max_iterations,
             max_duration: None,
         },
@@ -190,11 +265,13 @@ pub fn analyze_combined_with_config<'tcx>(
 ) -> PathForwardAnalysisResult<CombinedState<'tcx>> {
     let debug = options.debug;
     let semantics = CombinedSemantics {
+        tcx,
         places,
         all_places,
         pointer_places,
         interval_debug: debug,
         nullptr_debug: debug,
+        allocation_debug: debug,
         symbolic_debug: debug,
         reduce_debug: debug,
     };

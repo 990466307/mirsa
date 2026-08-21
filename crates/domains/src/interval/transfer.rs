@@ -1,9 +1,10 @@
 use rustc_middle::mir::*;
-use rustc_middle::ty::{Ty, TyCtxt, TyKind, TypingEnv};
+use rustc_middle::ty::{FloatTy, Ty, TyCtxt, TyKind, TypingEnv};
 
 use mirsa_relations::symbolic::SymbolicState;
 
 use super::abstract_value::*;
+use super::float_interval::{self, FloatCmpOp, FloatInterval, FloatKind};
 use super::state::IntervalState;
 
 fn i128_to_bits(value: i128, bit_width: u64) -> u128 {
@@ -37,6 +38,30 @@ fn scalar_layout<'tcx>(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> Option<(u64, bool)> {
 
 fn is_scalar_interval_ty<'tcx>(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> bool {
     scalar_layout(tcx, ty).is_some()
+}
+
+pub fn float_kind_for_ty(ty: Ty<'_>) -> Option<FloatKind> {
+    match ty.kind() {
+        TyKind::Float(FloatTy::F32) => Some(FloatKind::F32),
+        TyKind::Float(FloatTy::F64) => Some(FloatKind::F64),
+        _ => None,
+    }
+}
+
+fn operand_is_float_interval<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    local_decls: &LocalDecls<'tcx>,
+    op: &Operand<'tcx>,
+) -> bool {
+    float_kind_for_ty(op.ty(local_decls, tcx)).is_some()
+}
+
+fn place_is_float_interval<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    local_decls: &LocalDecls<'tcx>,
+    place: Place<'tcx>,
+) -> bool {
+    float_kind_for_ty(place.ty(local_decls, tcx).ty).is_some()
 }
 
 fn operand_is_scalar_interval<'tcx>(
@@ -107,6 +132,10 @@ fn eval_cast_interval<'tcx>(
     dst_ty: Ty<'tcx>,
 ) -> Interval {
     let src_ty = op.ty(local_decls, tcx);
+    if float_kind_for_ty(src_ty).is_some() {
+        let src = eval_float_operand(tcx, local_decls, op, symbolic, st);
+        return cast_float_to_integer(tcx, src, dst_ty);
+    }
     let src_iv = eval_operand(tcx, local_decls, op, symbolic, st);
     if src_iv.is_empty() {
         return Interval::empty();
@@ -155,6 +184,155 @@ fn eval_cast_interval<'tcx>(
     Interval::top()
 }
 
+fn integer_bounds<'tcx>(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> Option<(i128, i128)> {
+    let (bit_width, signed) = scalar_layout(tcx, ty)?;
+    match ty.kind() {
+        TyKind::Int(_) | TyKind::Uint(_) => {}
+        _ => return None,
+    }
+    if signed {
+        if bit_width == 128 {
+            Some((i128::MIN, i128::MAX))
+        } else {
+            let high = (1i128 << (bit_width - 1)) - 1;
+            Some((-high - 1, high))
+        }
+    } else if bit_width == 128 {
+        // Integer intervals use i128 endpoints.  Values above i128::MAX are
+        // conservatively represented by the upper sentinel.
+        Some((0, i128::MAX))
+    } else {
+        Some((0, ((1u128 << bit_width) - 1) as i128))
+    }
+}
+
+fn cast_float_value_to_integer<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    value: f64,
+    dst_ty: Ty<'tcx>,
+) -> Option<i128> {
+    let (low, high) = integer_bounds(tcx, dst_ty)?;
+    let value = match dst_ty.kind() {
+        TyKind::Int(_) => value as i128,
+        TyKind::Uint(_) => {
+            let value = value as u128;
+            if value > i128::MAX as u128 {
+                i128::MAX
+            } else {
+                value as i128
+            }
+        }
+        _ => return None,
+    };
+    Some(value.clamp(low, high))
+}
+
+fn cast_float_to_integer<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    src: FloatInterval,
+    dst_ty: Ty<'tcx>,
+) -> Interval {
+    if src.is_bottom() {
+        return Interval::empty();
+    }
+    let Some((dst_low, dst_high)) = integer_bounds(tcx, dst_ty) else {
+        return Interval::top();
+    };
+
+    let mut low = i128::MAX;
+    let mut high = i128::MIN;
+    if src.has_numeric_values() {
+        let Some(cast_low) = cast_float_value_to_integer(tcx, src.low, dst_ty) else {
+            return Interval::top();
+        };
+        let Some(cast_high) = cast_float_value_to_integer(tcx, src.high, dst_ty) else {
+            return Interval::top();
+        };
+        low = cast_low.min(cast_high).clamp(dst_low, dst_high);
+        high = cast_low.max(cast_high).clamp(dst_low, dst_high);
+    }
+    if src.may_nan {
+        low = low.min(0);
+        high = high.max(0);
+    }
+    if low > high {
+        Interval::empty()
+    } else {
+        Interval::new(low, high)
+    }
+}
+
+fn eval_cast_float<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    st: &mut IntervalState<'tcx>,
+    local_decls: &LocalDecls<'tcx>,
+    op: &Operand<'tcx>,
+    symbolic: &SymbolicState<'tcx>,
+    dst_ty: Ty<'tcx>,
+) -> FloatInterval {
+    let Some(dst_kind) = float_kind_for_ty(dst_ty) else {
+        return FloatInterval::top();
+    };
+    let src_ty = op.ty(local_decls, tcx);
+    if float_kind_for_ty(src_ty).is_some() {
+        let src = eval_float_operand(tcx, local_decls, op, symbolic, st);
+        if !src.has_numeric_values() {
+            return FloatInterval::new(f64::INFINITY, f64::NEG_INFINITY, src.may_nan);
+        }
+        return FloatInterval::new(
+            dst_kind.round(src.low),
+            dst_kind.round(src.high),
+            src.may_nan,
+        );
+    }
+
+    let Some((src_bw, src_signed)) = scalar_layout(tcx, src_ty) else {
+        return FloatInterval::top();
+    };
+    if !matches!(src_ty.kind(), TyKind::Int(_) | TyKind::Uint(_)) {
+        return FloatInterval::top();
+    }
+    let src = eval_operand(tcx, local_decls, op, symbolic, st);
+    if src.is_empty() {
+        return FloatInterval::bottom();
+    }
+    let Some((type_low, type_high)) = integer_bounds(tcx, src_ty) else {
+        return FloatInterval::top();
+    };
+    let low = src.low.max(type_low);
+    let high = src.high.min(type_high);
+    if !src_signed && src_bw == 128 && src.high == i128::MAX {
+        // Preserve the portion of u128 that the integer interval sentinel
+        // cannot express precisely.
+        return FloatInterval::numeric(
+            cast_integer_endpoint_to_float(dst_kind, low, src_signed),
+            cast_u128_to_float(dst_kind, u128::MAX),
+        );
+    }
+    FloatInterval::numeric(
+        cast_integer_endpoint_to_float(dst_kind, low, src_signed),
+        cast_integer_endpoint_to_float(dst_kind, high, src_signed),
+    )
+}
+
+fn cast_integer_endpoint_to_float(kind: FloatKind, value: i128, signed: bool) -> f64 {
+    if signed {
+        match kind {
+            FloatKind::F32 => f64::from(value as f32),
+            FloatKind::F64 => value as f64,
+        }
+    } else {
+        cast_u128_to_float(kind, value.max(0) as u128)
+    }
+}
+
+fn cast_u128_to_float(kind: FloatKind, value: u128) -> f64 {
+    match kind {
+        FloatKind::F32 => f64::from(value as f32),
+        FloatKind::F64 => value as f64,
+    }
+}
+
 // 将 MIR 常量操作数求值为区间值。
 pub fn interval_of_const<'tcx>(c: &ConstOperand<'tcx>) -> Interval {
     let ty = c.ty();
@@ -179,6 +357,21 @@ pub fn interval_of_const<'tcx>(c: &ConstOperand<'tcx>) -> Interval {
     } else {
         Interval::top()
     }
+}
+
+pub fn float_interval_of_const<'tcx>(c: &ConstOperand<'tcx>) -> FloatInterval {
+    let Some(kind) = float_kind_for_ty(c.ty()) else {
+        return FloatInterval::top();
+    };
+    let Some(scalar) = c.const_.try_to_scalar_int() else {
+        return FloatInterval::top();
+    };
+    let bits = scalar.to_bits_unchecked();
+    let value = match kind {
+        FloatKind::F32 => f64::from(f32::from_bits(bits as u32)),
+        FloatKind::F64 => f64::from_bits(bits as u64),
+    };
+    FloatInterval::singleton(value)
 }
 
 // 判断 place 是否包含运行时索引投影。
@@ -433,6 +626,18 @@ fn eval_place<'tcx>(
     }
 }
 
+fn eval_float_place<'tcx>(
+    symbolic: &SymbolicState<'tcx>,
+    place: Place<'tcx>,
+    st: &mut IntervalState<'tcx>,
+) -> FloatInterval {
+    if has_runtime_index(place) {
+        FloatInterval::top()
+    } else {
+        st.read_float_interval_resolved(symbolic, place)
+    }
+}
+
 // 将操作数求值为区间值。
 pub fn eval_operand<'tcx>(
     tcx: TyCtxt<'tcx>,
@@ -447,6 +652,22 @@ pub fn eval_operand<'tcx>(
     match op {
         Operand::Copy(p) | Operand::Move(p) => eval_place(symbolic, *p, st),
         Operand::Constant(c) => interval_of_const(c),
+    }
+}
+
+pub fn eval_float_operand<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    local_decls: &LocalDecls<'tcx>,
+    op: &Operand<'tcx>,
+    symbolic: &SymbolicState<'tcx>,
+    st: &mut IntervalState<'tcx>,
+) -> FloatInterval {
+    if !operand_is_float_interval(tcx, local_decls, op) {
+        return FloatInterval::top();
+    }
+    match op {
+        Operand::Copy(place) | Operand::Move(place) => eval_float_place(symbolic, *place, st),
+        Operand::Constant(c) => float_interval_of_const(c),
     }
 }
 
@@ -499,6 +720,23 @@ fn eval_binary_op_interval<'tcx>(
         BinOp::Le | BinOp::Lt | BinOp::Ge | BinOp::Gt | BinOp::Eq | BinOp::Ne
     );
     if is_comparison
+        && operand_is_float_interval(tcx, local_decls, a)
+        && operand_is_float_interval(tcx, local_decls, b)
+    {
+        let left = eval_float_operand(tcx, local_decls, a, symbolic, st);
+        let right = eval_float_operand(tcx, local_decls, b, symbolic, st);
+        let op = match op {
+            BinOp::Lt => FloatCmpOp::Lt,
+            BinOp::Le => FloatCmpOp::Le,
+            BinOp::Gt => FloatCmpOp::Gt,
+            BinOp::Ge => FloatCmpOp::Ge,
+            BinOp::Eq => FloatCmpOp::Eq,
+            BinOp::Ne => FloatCmpOp::Ne,
+            _ => unreachable!(),
+        };
+        return float_interval::compare(op, &left, &right);
+    }
+    if is_comparison
         && (!operand_is_scalar_interval(tcx, local_decls, a)
             || !operand_is_scalar_interval(tcx, local_decls, b))
     {
@@ -526,6 +764,29 @@ fn eval_binary_op_interval<'tcx>(
     }
 }
 
+fn eval_binary_op_float<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    st: &mut IntervalState<'tcx>,
+    symbolic: &SymbolicState<'tcx>,
+    local_decls: &LocalDecls<'tcx>,
+    op: &BinOp,
+    ops: &Box<(Operand<'tcx>, Operand<'tcx>)>,
+) -> FloatInterval {
+    let (a, b) = &**ops;
+    let Some(kind) = float_kind_for_ty(a.ty(local_decls, tcx)) else {
+        return FloatInterval::top();
+    };
+    let left = eval_float_operand(tcx, local_decls, a, symbolic, st);
+    let right = eval_float_operand(tcx, local_decls, b, symbolic, st);
+    match op {
+        BinOp::Add => float_interval::add(kind, &left, &right),
+        BinOp::Sub => float_interval::sub(kind, &left, &right),
+        BinOp::Mul => float_interval::mul(kind, &left, &right),
+        BinOp::Div => float_interval::div(kind, &left, &right),
+        _ => FloatInterval::top(),
+    }
+}
+
 // 在区间域中计算一元运算。
 fn eval_unary_op_interval<'tcx>(
     tcx: TyCtxt<'tcx>,
@@ -540,6 +801,21 @@ fn eval_unary_op_interval<'tcx>(
     match op {
         UnOp::Neg => neg(&sa),
         _ => Interval::top(),
+    }
+}
+
+fn eval_unary_op_float<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    st: &mut IntervalState<'tcx>,
+    symbolic: &SymbolicState<'tcx>,
+    local_decls: &LocalDecls<'tcx>,
+    op: &UnOp,
+    arg: &Operand<'tcx>,
+) -> FloatInterval {
+    let value = eval_float_operand(tcx, local_decls, arg, symbolic, st);
+    match op {
+        UnOp::Neg => float_interval::neg(&value),
+        _ => FloatInterval::top(),
     }
 }
 
@@ -589,6 +865,22 @@ pub fn eval_assign_rhs_interval<'tcx>(
     }
 }
 
+pub fn eval_assign_rhs_float<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    st: &mut IntervalState<'tcx>,
+    symbolic: &SymbolicState<'tcx>,
+    local_decls: &LocalDecls<'tcx>,
+    rvalue: &Rvalue<'tcx>,
+) -> FloatInterval {
+    match rvalue {
+        Rvalue::BinaryOp(op, ops) => eval_binary_op_float(tcx, st, symbolic, local_decls, op, ops),
+        Rvalue::UnaryOp(op, arg) => eval_unary_op_float(tcx, st, symbolic, local_decls, op, arg),
+        Rvalue::Use(op) => eval_float_operand(tcx, local_decls, op, symbolic, st),
+        Rvalue::Cast(_, op, dst_ty) => eval_cast_float(tcx, st, local_decls, op, symbolic, *dst_ty),
+        _ => FloatInterval::top(),
+    }
+}
+
 // 对单条 MIR 语句执行区间与等价关系的 transfer。
 pub fn transfer_stmt<'tcx>(
     tcx: TyCtxt<'tcx>,
@@ -605,7 +897,8 @@ pub fn transfer_stmt<'tcx>(
             if let Rvalue::Use(op) = rvalue {
                 if operand_place(op).is_some_and(has_runtime_index)
                     && !has_runtime_index(*place)
-                    && place_is_scalar_interval(tcx, local_decls, *place)
+                    && (place_is_scalar_interval(tcx, local_decls, *place)
+                        || place_is_float_interval(tcx, local_decls, *place))
                 {
                     return;
                 }
@@ -617,6 +910,7 @@ pub fn transfer_stmt<'tcx>(
             let rhs_len = rvalue_len(tcx, local_decls, st, rvalue);
             st.clear_len_resolved(symbolic, &dst_place);
             let tracks_interval_value = place_is_scalar_interval(tcx, local_decls, dst_place);
+            let tracks_float_value = place_is_float_interval(tcx, local_decls, dst_place);
             match rvalue {
                 Rvalue::BinaryOp(op, ops) => match op {
                     BinOp::AddWithOverflow | BinOp::SubWithOverflow | BinOp::MulWithOverflow => {
@@ -631,10 +925,15 @@ pub fn transfer_stmt<'tcx>(
                         );
                     }
                     _ => {
-                        let rhs_interval =
-                            eval_binary_op_interval(tcx, st, symbolic, local_decls, op, ops);
                         if tracks_interval_value {
+                            let rhs_interval =
+                                eval_binary_op_interval(tcx, st, symbolic, local_decls, op, ops);
                             st.set_interval_resolved(symbolic, dst_place, rhs_interval);
+                        }
+                        if tracks_float_value {
+                            let rhs_interval =
+                                eval_binary_op_float(tcx, st, symbolic, local_decls, op, ops);
+                            st.set_float_interval_resolved(symbolic, dst_place, rhs_interval);
                         }
                     }
                 },
@@ -652,25 +951,39 @@ pub fn transfer_stmt<'tcx>(
                 }
 
                 Rvalue::UnaryOp(op, arg) => {
-                    let rhs_interval =
-                        eval_unary_op_interval(tcx, st, symbolic, local_decls, op, arg);
                     if tracks_interval_value {
+                        let rhs_interval =
+                            eval_unary_op_interval(tcx, st, symbolic, local_decls, op, arg);
                         st.set_interval_resolved(symbolic, dst_place, rhs_interval);
+                    }
+                    if tracks_float_value {
+                        let rhs_interval =
+                            eval_unary_op_float(tcx, st, symbolic, local_decls, op, arg);
+                        st.set_float_interval_resolved(symbolic, dst_place, rhs_interval);
                     }
                 }
 
                 Rvalue::Use(op) => {
-                    let rhs_interval = eval_operand(tcx, local_decls, op, symbolic, st);
                     if tracks_interval_value {
+                        let rhs_interval = eval_operand(tcx, local_decls, op, symbolic, st);
                         st.set_interval_resolved(symbolic, dst_place, rhs_interval);
+                    }
+                    if tracks_float_value {
+                        let rhs_interval = eval_float_operand(tcx, local_decls, op, symbolic, st);
+                        st.set_float_interval_resolved(symbolic, dst_place, rhs_interval);
                     }
                 }
 
                 Rvalue::Cast(cast_kind, op, dst_ty) => {
-                    let rhs_interval =
-                        eval_cast_interval(tcx, st, local_decls, op, symbolic, *dst_ty);
                     if tracks_interval_value {
+                        let rhs_interval =
+                            eval_cast_interval(tcx, st, local_decls, op, symbolic, *dst_ty);
                         st.set_interval_resolved(symbolic, dst_place, rhs_interval);
+                    }
+                    if tracks_float_value {
+                        let rhs_interval =
+                            eval_cast_float(tcx, st, local_decls, op, symbolic, *dst_ty);
+                        st.set_float_interval_resolved(symbolic, dst_place, rhs_interval);
                     }
                     if matches!(cast_kind, CastKind::PointerCoercion(_, _)) {
                         if let Operand::Copy(src) | Operand::Move(src) = op {
@@ -722,6 +1035,11 @@ pub fn transfer_stmt<'tcx>(
                             if place_is_scalar_interval(tcx, local_decls, elem_place) {
                                 st.set_interval_resolved(symbolic, elem_place, elem_interval);
                             }
+                            if place_is_float_interval(tcx, local_decls, elem_place) {
+                                let elem_interval =
+                                    eval_float_operand(tcx, local_decls, op, symbolic, st);
+                                st.set_float_interval_resolved(symbolic, elem_place, elem_interval);
+                            }
                             st.clear_len_resolved(symbolic, &elem_place);
                             if let Some(len) = operand_known_len(st, op) {
                                 st.set_len_resolved(symbolic, elem_place, len);
@@ -743,6 +1061,11 @@ pub fn transfer_stmt<'tcx>(
                             if place_is_scalar_interval(tcx, local_decls, elem_place) {
                                 st.set_interval_resolved(symbolic, elem_place, elem_interval);
                             }
+                            if place_is_float_interval(tcx, local_decls, elem_place) {
+                                let elem_interval =
+                                    eval_float_operand(tcx, local_decls, op, symbolic, st);
+                                st.set_float_interval_resolved(symbolic, elem_place, elem_interval);
+                            }
                             st.clear_len_resolved(symbolic, &elem_place);
                             if let Some(len) = operand_known_len(st, op) {
                                 st.set_len_resolved(symbolic, elem_place, len);
@@ -752,6 +1075,13 @@ pub fn transfer_stmt<'tcx>(
                     _ => {
                         if tracks_interval_value {
                             st.set_interval_resolved(symbolic, dst_place, Interval::top());
+                        }
+                        if tracks_float_value {
+                            st.set_float_interval_resolved(
+                                symbolic,
+                                dst_place,
+                                FloatInterval::top(),
+                            );
                         }
                     }
                 },
@@ -780,6 +1110,9 @@ pub fn transfer_stmt<'tcx>(
                     if tracks_interval_value {
                         st.set_interval_resolved(symbolic, dst_place, Interval::top());
                     }
+                    if tracks_float_value {
+                        st.set_float_interval_resolved(symbolic, dst_place, FloatInterval::top());
+                    }
                 }
             }
             if let Some(len) = rhs_len {
@@ -806,6 +1139,9 @@ pub fn transfer_terminator<'tcx>(
     st.clear_len_resolved(symbolic, destination);
     if place_is_scalar_interval(tcx, local_decls, *destination) {
         st.set_interval_resolved(symbolic, *destination, Interval::top());
+    }
+    if place_is_float_interval(tcx, local_decls, *destination) {
+        st.set_float_interval_resolved(symbolic, *destination, FloatInterval::top());
     }
     let Some(path) = terminator_call_path(tcx, local_decls, term) else {
         return;
@@ -900,9 +1236,11 @@ pub fn transfer_terminator<'tcx>(
         )
     };
     let dst_deref = destination.project_deeper(&[ProjectionElem::Deref], tcx);
-    if !place_is_scalar_interval(tcx, local_decls, dst_deref) {
-        return;
+    if place_is_scalar_interval(tcx, local_decls, dst_deref) {
+        let elem_iv = eval_place(symbolic, elem_place, st);
+        st.set_interval_resolved(symbolic, dst_deref, elem_iv);
+    } else if place_is_float_interval(tcx, local_decls, dst_deref) {
+        let elem_iv = eval_float_place(symbolic, elem_place, st);
+        st.set_float_interval_resolved(symbolic, dst_deref, elem_iv);
     }
-    let elem_iv = eval_place(symbolic, elem_place, st);
-    st.set_interval_resolved(symbolic, dst_deref, elem_iv);
 }

@@ -1,5 +1,6 @@
 use mirsa_framework::access_path::AccessPath;
 use mirsa_framework::eq_domain::{EqDomain, join_eq};
+use rustc_hir::def_id::DefId;
 use rustc_middle::mir::{
     BinOp, CastKind, LocalDecls, Operand, Place, Rvalue, Statement, StatementKind, Terminator,
     TerminatorKind,
@@ -15,11 +16,9 @@ pub enum SymbolicExpr<'tcx> {
         left: Operand<'tcx>,
         right: Operand<'tcx>,
     },
-    IsEmpty {
-        receiver: Operand<'tcx>,
-    },
-    IsNull {
-        arg: Operand<'tcx>,
+    Call {
+        callee: DefId,
+        args: Vec<Operand<'tcx>>,
     },
 }
 
@@ -34,26 +33,11 @@ pub enum SymbolicFact<'tcx> {
 impl<'tcx> Eq for SymbolicFact<'tcx> {}
 
 #[derive(Clone, Debug, PartialEq)]
-pub enum SymbolicEffect<'tcx> {
-    IndexedRead {
-        dst: Place<'tcx>,
-        src: Place<'tcx>,
-    },
-    IndexedWrite {
-        place: Place<'tcx>,
-        rvalue: Rvalue<'tcx>,
-    },
-}
-
-impl<'tcx> Eq for SymbolicEffect<'tcx> {}
-
-#[derive(Clone, Debug, PartialEq)]
 pub struct SymbolicState<'tcx> {
     pub eq: EqDomain<'tcx, AccessPath>,
     display_places: HashMap<AccessPath, Place<'tcx>>,
     exprs: HashMap<AccessPath, SymbolicExpr<'tcx>>,
     facts: Vec<SymbolicFact<'tcx>>,
-    effects: Vec<SymbolicEffect<'tcx>>,
     points_to: HashMap<AccessPath, AccessPath>,
     debug: bool,
 }
@@ -67,7 +51,6 @@ impl<'tcx> SymbolicState<'tcx> {
             display_places: HashMap::new(),
             exprs: HashMap::new(),
             facts: Vec::new(),
-            effects: Vec::new(),
             points_to: HashMap::new(),
             debug: false,
         }
@@ -127,8 +110,6 @@ impl<'tcx> SymbolicState<'tcx> {
             .retain(|_, expr| !expr_mentions_path_tree(expr, path));
         self.facts
             .retain(|fact| !fact_mentions_path_tree(fact, path));
-        self.effects
-            .retain(|effect| !effect_mentions_path_tree(effect, path));
     }
 
     pub fn set_points_to(&mut self, pointer: AccessPath, pointee: AccessPath) {
@@ -207,15 +188,6 @@ impl<'tcx> SymbolicState<'tcx> {
         &self.facts
     }
 
-    pub fn take_effects(&mut self) -> Vec<SymbolicEffect<'tcx>> {
-        std::mem::take(&mut self.effects)
-    }
-
-    pub fn push_effect(&mut self, effect: SymbolicEffect<'tcx>) {
-        self.debug(format_args!("effect {effect:?}"));
-        self.effects.push(effect);
-    }
-
     pub fn set_place_expr(&mut self, place: Place<'tcx>, expr: SymbolicExpr<'tcx>) {
         let Some(path) = AccessPath::from_place(place) else {
             return;
@@ -265,7 +237,6 @@ impl<'tcx> SymbolicState<'tcx> {
                 .filter(|fact| right.facts.contains(fact))
                 .cloned()
                 .collect(),
-            effects: Vec::new(),
             points_to: left
                 .points_to
                 .iter()
@@ -300,8 +271,9 @@ fn expr_mentions_path_tree<'tcx>(expr: &SymbolicExpr<'tcx>, path: &AccessPath) -
         SymbolicExpr::Cmp { left, right, .. } => {
             operand_mentions_path_tree(left, path) || operand_mentions_path_tree(right, path)
         }
-        SymbolicExpr::IsEmpty { receiver } => operand_mentions_path_tree(receiver, path),
-        SymbolicExpr::IsNull { arg } => operand_mentions_path_tree(arg, path),
+        SymbolicExpr::Call { args, .. } => args
+            .iter()
+            .any(|operand| operand_mentions_path_tree(operand, path)),
     }
 }
 
@@ -313,55 +285,11 @@ fn fact_mentions_path_tree<'tcx>(fact: &SymbolicFact<'tcx>, path: &AccessPath) -
     }
 }
 
-fn effect_mentions_path_tree<'tcx>(effect: &SymbolicEffect<'tcx>, path: &AccessPath) -> bool {
-    match effect {
-        SymbolicEffect::IndexedRead { dst, src } => {
-            place_mentions_path_tree(*dst, path) || place_mentions_path_tree(*src, path)
-        }
-        SymbolicEffect::IndexedWrite { place, rvalue } => {
-            place_mentions_path_tree(*place, path) || rvalue_mentions_path_tree(rvalue, path)
-        }
-    }
-}
-
-fn place_mentions_path_tree<'tcx>(place: Place<'tcx>, path: &AccessPath) -> bool {
-    AccessPath::from_place(place).is_some_and(|place_path| {
-        place_path.strip_pattern_prefix(path).is_some()
-            || path.strip_pattern_prefix(&place_path).is_some()
-    })
-}
-
-fn rvalue_mentions_path_tree<'tcx>(rvalue: &Rvalue<'tcx>, path: &AccessPath) -> bool {
-    match rvalue {
-        Rvalue::Use(op)
-        | Rvalue::Repeat(op, _)
-        | Rvalue::Cast(_, op, _)
-        | Rvalue::UnaryOp(_, op) => operand_mentions_path_tree(op, path),
-        Rvalue::BinaryOp(_, ops) => {
-            operand_mentions_path_tree(&ops.0, path) || operand_mentions_path_tree(&ops.1, path)
-        }
-        Rvalue::Ref(_, _, place)
-        | Rvalue::RawPtr(_, place)
-        | Rvalue::Len(place)
-        | Rvalue::Discriminant(place) => place_mentions_path_tree(*place, path),
-        Rvalue::Aggregate(_, ops) => ops.iter().any(|op| operand_mentions_path_tree(op, path)),
-        _ => false,
-    }
-}
-
 fn is_cmp_op(op: BinOp) -> bool {
     matches!(
         op,
         BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge | BinOp::Eq | BinOp::Ne
     )
-}
-
-fn is_slice_is_empty_path(path: &str) -> bool {
-    path.ends_with("::is_empty")
-}
-
-fn is_ptr_is_null_path(path: &str) -> bool {
-    path.ends_with("::is_null") && path.contains("::ptr::")
 }
 
 fn has_runtime_index<'tcx>(place: Place<'tcx>) -> bool {
@@ -372,10 +300,10 @@ fn has_runtime_index<'tcx>(place: Place<'tcx>) -> bool {
 }
 
 pub fn transfer_stmt<'tcx>(
-    tcx: TyCtxt<'tcx>,
+    _tcx: TyCtxt<'tcx>,
     symbolic: &mut SymbolicState<'tcx>,
     stmt: &Statement<'tcx>,
-    local_decls: &LocalDecls<'tcx>,
+    _local_decls: &LocalDecls<'tcx>,
 ) {
     let StatementKind::Assign(assign) = &stmt.kind else {
         return;
@@ -388,20 +316,9 @@ pub fn transfer_stmt<'tcx>(
             symbolic.exprs.remove(&dst_path);
         }
     }
-    if has_runtime_index(*dst) {
-        symbolic.push_effect(SymbolicEffect::IndexedWrite {
-            place: *dst,
-            rvalue: rvalue.clone(),
-        });
-    }
-
     match rvalue {
         Rvalue::Use(Operand::Copy(src) | Operand::Move(src)) => {
             if has_runtime_index(*src) && !has_runtime_index(*dst) {
-                symbolic.push_effect(SymbolicEffect::IndexedRead {
-                    dst: *dst,
-                    src: *src,
-                });
                 return;
             }
             let expr = symbolic.expr_for_place(*src).cloned();
@@ -433,11 +350,12 @@ pub fn transfer_stmt<'tcx>(
             Operand::Copy(src) | Operand::Move(src),
             _,
         ) => {
-            let src_ty = src.ty(local_decls, tcx).ty;
-            if let TyKind::Ref(_, inner, _) = src_ty.kind() {
-                if matches!(inner.kind(), TyKind::Array(_, _)) {
-                    symbolic.union_places(*dst, *src);
-                }
+            if let (Some(dst_path), Some(src_path)) =
+                (AccessPath::from_place(*dst), AccessPath::from_place(*src))
+            {
+                let dst_path = symbolic.normalize_path(&dst_path);
+                let src_path = symbolic.normalize_path(&src_path);
+                symbolic.copy_points_to(dst_path, &src_path);
             }
         }
         Rvalue::Ref(_, _, borrowed_place) => {
@@ -447,10 +365,6 @@ pub fn transfer_stmt<'tcx>(
             ) {
                 let dst_path = symbolic.normalize_path(&dst_path);
                 symbolic.set_points_to(dst_path, symbolic.normalize_path(&src_path));
-            }
-            let borrowed_ty = borrowed_place.ty(local_decls, tcx).ty;
-            if matches!(borrowed_ty.kind(), TyKind::Array(_, _) | TyKind::Slice(_)) {
-                symbolic.union_places(*dst, *borrowed_place);
             }
         }
         Rvalue::RawPtr(_, borrowed_place) => {
@@ -486,25 +400,14 @@ pub fn transfer_terminator<'tcx>(
     let TyKind::FnDef(def_id, _) = func.ty(local_decls, tcx).kind() else {
         return;
     };
-    let path = tcx.def_path_str(*def_id);
-    if is_slice_is_empty_path(&path) {
-        if let Some(arg) = args.first() {
-            symbolic.set_place_expr(
-                *destination,
-                SymbolicExpr::IsEmpty {
-                    receiver: arg.node.clone(),
-                },
-            );
-        }
-    } else if is_ptr_is_null_path(&path) {
-        if let Some(arg) = args.first() {
-            symbolic.set_place_expr(
-                *destination,
-                SymbolicExpr::IsNull {
-                    arg: arg.node.clone(),
-                },
-            );
-        }
+    if matches!(destination.ty(local_decls, tcx).ty.kind(), TyKind::Bool) {
+        symbolic.set_place_expr(
+            *destination,
+            SymbolicExpr::Call {
+                callee: *def_id,
+                args: args.iter().map(|arg| arg.node.clone()).collect(),
+            },
+        );
     }
 }
 

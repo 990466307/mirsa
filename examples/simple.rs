@@ -1,7 +1,7 @@
 #![allow(dead_code, unused_variables)]
 // use std::num::NonZero;
-use std::ptr::NonNull;
 use core::alloc::Layout;
+use std::ptr::NonNull;
 fn main() {
     let a = [
         std::ptr::null_mut::<u8>(),

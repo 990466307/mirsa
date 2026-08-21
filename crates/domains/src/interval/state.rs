@@ -2,15 +2,18 @@ use mirsa_framework::access_path::AccessPath;
 use mirsa_framework::forward::DomainState;
 use mirsa_framework::printer::StateEntries;
 use mirsa_relations::symbolic::{SymbolicState, join_display_places};
-use rustc_middle::mir::Place;
+use rustc_middle::mir::{LocalDecls, Place};
+use rustc_middle::ty::{TyCtxt, TyKind};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use super::abstract_value::{Interval, join, widen};
+use super::float_interval::{FloatInterval, join as join_float, widen as widen_float};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IntervalState<'tcx> {
     interval: HashMap<AccessPath, Interval>,
+    float_interval: HashMap<AccessPath, FloatInterval>,
     len: HashMap<AccessPath, Interval>,
     tracked_len: HashSet<AccessPath>,
     display_places: HashMap<AccessPath, Place<'tcx>>,
@@ -21,6 +24,7 @@ impl<'tcx> IntervalState<'tcx> {
     fn default(debug: bool) -> Self {
         IntervalState {
             interval: HashMap::new(),
+            float_interval: HashMap::new(),
             len: HashMap::new(),
             tracked_len: HashSet::new(),
             display_places: HashMap::new(),
@@ -29,12 +33,15 @@ impl<'tcx> IntervalState<'tcx> {
     }
 
     pub fn new_bot_state(
+        tcx: TyCtxt<'tcx>,
+        local_decls: &LocalDecls<'tcx>,
         places: &[Place<'tcx>],
         len_places: &[Place<'tcx>],
         arg_count: usize,
         debug: bool,
     ) -> Self {
         let mut interval = HashMap::new();
+        let mut float_interval = HashMap::new();
         let mut len = HashMap::new();
         let mut tracked_len = HashSet::new();
         let mut display_places = HashMap::new();
@@ -55,6 +62,12 @@ impl<'tcx> IntervalState<'tcx> {
         }
 
         for place in places {
+            if !matches!(
+                place.ty(local_decls, tcx).ty.kind(),
+                TyKind::Int(_) | TyKind::Uint(_) | TyKind::Bool | TyKind::Char
+            ) {
+                continue;
+            }
             let Some(path) = Self::path_for_place(*place) else {
                 continue;
             };
@@ -68,8 +81,26 @@ impl<'tcx> IntervalState<'tcx> {
             display_places.insert(path, *place);
         }
 
+        for place in len_places {
+            if !matches!(place.ty(local_decls, tcx).ty.kind(), TyKind::Float(_)) {
+                continue;
+            }
+            let Some(path) = Self::path_for_place(*place) else {
+                continue;
+            };
+            let local_idx = place.local.index();
+            let value = if local_idx >= 1 && local_idx <= arg_count {
+                FloatInterval::top()
+            } else {
+                FloatInterval::bottom()
+            };
+            float_interval.insert(path.clone(), value);
+            display_places.insert(path, *place);
+        }
+
         IntervalState {
             interval,
+            float_interval,
             len,
             tracked_len,
             display_places,
@@ -88,7 +119,9 @@ impl<'tcx> DomainState<'tcx> for IntervalState<'tcx> {
     }
 
     fn state_changed(previous: &Self, next: &Self) -> bool {
-        previous.interval != next.interval || previous.len != next.len
+        previous.interval != next.interval
+            || previous.float_interval != next.float_interval
+            || previous.len != next.len
     }
 }
 
@@ -99,6 +132,11 @@ impl<'tcx> fmt::Display for IntervalState<'tcx> {
             .iter()
             .map(|(path, interval)| (path.to_string(), interval.to_string()))
             .collect();
+        entries.extend(
+            self.float_interval
+                .iter()
+                .map(|(path, interval)| (path.to_string(), interval.to_string())),
+        );
         entries.sort_by(|a, b| a.0.cmp(&b.0));
 
         for (idx, (place, interval)) in entries.iter().enumerate() {
@@ -113,14 +151,21 @@ impl<'tcx> fmt::Display for IntervalState<'tcx> {
 
 impl<'tcx> StateEntries<'tcx> for IntervalState<'tcx> {
     fn entries(&self) -> Vec<(Place<'tcx>, String)> {
-        self.interval
+        let mut entries: Vec<_> = self
+            .interval
             .iter()
             .filter_map(|(path, interval)| {
                 self.display_places
                     .get(path)
                     .map(|place| (*place, interval.to_string()))
             })
-            .collect()
+            .collect();
+        entries.extend(self.float_interval.iter().filter_map(|(path, interval)| {
+            self.display_places
+                .get(path)
+                .map(|place| (*place, interval.to_string()))
+        }));
+        entries
     }
 
     fn should_print_entry(&self, place: Place<'tcx>) -> bool {
@@ -130,6 +175,10 @@ impl<'tcx> StateEntries<'tcx> for IntervalState<'tcx> {
         self.interval
             .get(&path)
             .is_some_and(|interval| !interval.is_empty())
+            || self
+                .float_interval
+                .get(&path)
+                .is_some_and(|interval| !interval.is_bottom())
     }
 }
 
@@ -214,6 +263,81 @@ impl<'tcx> IntervalState<'tcx> {
         self.display_places.entry(path).or_insert(place);
     }
 
+    pub fn tracked_float_interval_resolved(
+        &self,
+        symbolic: &SymbolicState<'tcx>,
+        place: &Place<'tcx>,
+    ) -> Option<FloatInterval> {
+        let path = Self::path_for_place(*place)?;
+        self.lookup_float_interval(&symbolic.normalize_path(&path))
+    }
+
+    pub fn read_float_interval_resolved(
+        &mut self,
+        symbolic: &SymbolicState<'tcx>,
+        place: Place<'tcx>,
+    ) -> FloatInterval {
+        let Some(path) = Self::path_for_place(place) else {
+            return FloatInterval::top();
+        };
+        let path = symbolic.normalize_path(&path);
+        if let Some(value) = self.lookup_float_interval(&path) {
+            if self.float_interval.contains_key(&path)
+                && self.float_interval.get(&path).copied() != Some(value)
+            {
+                self.float_interval.insert(path.clone(), value);
+                self.display_places.entry(path).or_insert(place);
+            }
+            return value;
+        }
+
+        self.debug(format_args!(
+            "untracked float interval read {path}; using top"
+        ));
+        FloatInterval::top()
+    }
+
+    pub fn set_float_interval_resolved(
+        &mut self,
+        symbolic: &SymbolicState<'tcx>,
+        place: Place<'tcx>,
+        interval: FloatInterval,
+    ) {
+        let Some(path) = Self::path_for_place(place) else {
+            return;
+        };
+        let path = symbolic.normalize_path(&path);
+        if !self.float_interval.contains_key(&path) {
+            self.debug(format_args!(
+                "untracked float interval write {path}; ignored"
+            ));
+            return;
+        }
+        self.float_interval.insert(path.clone(), interval);
+        self.display_places.entry(path).or_insert(place);
+    }
+
+    pub fn join_float_interval_resolved(
+        &mut self,
+        symbolic: &SymbolicState<'tcx>,
+        place: Place<'tcx>,
+        interval: FloatInterval,
+    ) {
+        let Some(path) = Self::path_for_place(place) else {
+            return;
+        };
+        let path = symbolic.normalize_path(&path);
+        let Some(old) = self.float_interval.get(&path).copied() else {
+            self.debug(format_args!(
+                "untracked float interval join-write {path}; ignored"
+            ));
+            return;
+        };
+        let value = join_float(&old, &interval);
+        self.float_interval.insert(path.clone(), value);
+        self.display_places.entry(path).or_insert(place);
+    }
+
     pub fn get_len(&self, place: &Place<'tcx>) -> Option<Interval> {
         let path = Self::path_for_place(*place)?;
         self.len
@@ -270,6 +394,7 @@ impl<'tcx> IntervalState<'tcx> {
     pub fn all_fact_places(&self) -> Vec<Place<'tcx>> {
         self.interval
             .keys()
+            .chain(self.float_interval.keys())
             .chain(self.len.keys())
             .filter_map(|path| self.display_places.get(path).copied())
             .collect()
@@ -277,6 +402,13 @@ impl<'tcx> IntervalState<'tcx> {
 
     pub fn interval_places(&self) -> Vec<Place<'tcx>> {
         self.interval
+            .keys()
+            .filter_map(|path| self.display_places.get(path).copied())
+            .collect()
+    }
+
+    pub fn float_interval_places(&self) -> Vec<Place<'tcx>> {
+        self.float_interval
             .keys()
             .filter_map(|path| self.display_places.get(path).copied())
             .collect()
@@ -311,6 +443,28 @@ impl<'tcx> IntervalState<'tcx> {
             (_, value) => value,
         }
     }
+
+    fn lookup_float_interval(&self, path: &AccessPath) -> Option<FloatInterval> {
+        let exact = self.float_interval.get(path).copied();
+        let mut value = exact;
+
+        for (candidate, candidate_value) in &self.float_interval {
+            if candidate == path {
+                continue;
+            }
+            if path.matches_pattern(candidate) {
+                value = Some(join_float(
+                    &value.unwrap_or_else(FloatInterval::bottom),
+                    candidate_value,
+                ));
+            }
+        }
+
+        match (exact, value) {
+            (None, Some(value)) if value.is_bottom() => None,
+            (_, value) => value,
+        }
+    }
 }
 
 pub fn join_state<'tcx>(a: &IntervalState<'tcx>, b: &IntervalState<'tcx>) -> IntervalState<'tcx> {
@@ -319,6 +473,19 @@ pub fn join_state<'tcx>(a: &IntervalState<'tcx>, b: &IntervalState<'tcx>) -> Int
         let ia = a.interval.get(k).copied().unwrap_or_else(Interval::empty);
         let ib = b.interval.get(k).copied().unwrap_or_else(Interval::empty);
         out.interval.insert(k.clone(), join(&ia, &ib));
+    }
+    for k in a.float_interval.keys().chain(b.float_interval.keys()) {
+        let ia = a
+            .float_interval
+            .get(k)
+            .copied()
+            .unwrap_or_else(FloatInterval::bottom);
+        let ib = b
+            .float_interval
+            .get(k)
+            .copied()
+            .unwrap_or_else(FloatInterval::bottom);
+        out.float_interval.insert(k.clone(), join_float(&ia, &ib));
     }
     out.tracked_len = a.tracked_len.union(&b.tracked_len).cloned().collect();
     for k in &out.tracked_len {
@@ -337,6 +504,19 @@ pub fn widen_state<'tcx>(a: &IntervalState<'tcx>, b: &IntervalState<'tcx>) -> In
         let ib = b.interval.get(k).copied().unwrap_or_else(Interval::empty);
         let widened = widen(&ia, &ib);
         out.interval.insert(k.clone(), widened);
+    }
+    for k in a.float_interval.keys().chain(b.float_interval.keys()) {
+        let ia = a
+            .float_interval
+            .get(k)
+            .copied()
+            .unwrap_or_else(FloatInterval::bottom);
+        let ib = b
+            .float_interval
+            .get(k)
+            .copied()
+            .unwrap_or_else(FloatInterval::bottom);
+        out.float_interval.insert(k.clone(), widen_float(&ia, &ib));
     }
     out.tracked_len = a.tracked_len.union(&b.tracked_len).cloned().collect();
     for k in &out.tracked_len {

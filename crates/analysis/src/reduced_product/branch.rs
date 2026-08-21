@@ -2,7 +2,6 @@ use rustc_middle::mir::*;
 use rustc_middle::ty::{TyCtxt, TyKind};
 
 use super::state::CombinedState;
-use mirsa_domains::interval::transfer::interval_of_const;
 
 fn record_switch_fact<'tcx>(
     out: &mut CombinedState<'tcx>,
@@ -80,32 +79,27 @@ pub fn refine_edge<'tcx>(
                         .then_some(out)
                 }
                 Operand::Constant(c) => {
-                    let c_iv = interval_of_const(c);
-                    if c_iv.is_empty() || c_iv.low != c_iv.high {
+                    let Some((constant, bit_width)) = c
+                        .const_
+                        .try_to_scalar_int()
+                        .map(|value| (value.to_bits_unchecked(), value.size().bits()))
+                    else {
                         return out
                             .refine_with_path_facts(tcx, &body.local_decls)
                             .then_some(out);
-                    }
-                    let c_val = c_iv.low;
-                    let discr_ty = discr.ty(&body.local_decls, tcx);
-                    let values_for_succ_i128: Vec<i128> = values_for_succ
+                    };
+                    let normalize = |value: u128| {
+                        if bit_width == 128 {
+                            value
+                        } else {
+                            value & ((1u128 << bit_width) - 1)
+                        }
+                    };
+                    let matches_succ_value = values_for_succ
                         .iter()
-                        .filter_map(|value| {
-                            mirsa_domains::interval::transfer::switch_value_to_i128(
-                                tcx, discr_ty, *value,
-                            )
-                        })
-                        .collect();
-                    let all_values_i128: Vec<i128> = all_values
-                        .iter()
-                        .filter_map(|value| {
-                            mirsa_domains::interval::transfer::switch_value_to_i128(
-                                tcx, discr_ty, *value,
-                            )
-                        })
-                        .collect();
-                    let matches_succ_value = values_for_succ_i128.contains(&c_val);
-                    let matches_any_value = all_values_i128.contains(&c_val);
+                        .any(|value| normalize(*value) == constant);
+                    let matches_any_value =
+                        all_values.iter().any(|value| normalize(*value) == constant);
                     if matches_succ_value || (is_otherwise && !matches_any_value) {
                         out.refine_with_path_facts(tcx, &body.local_decls)
                             .then_some(out)

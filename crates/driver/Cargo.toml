@@ -1,12 +1,13 @@
 [package]
 name = "mirsa-driver"
-version = "0.2.3"
+version = "0.3.0"
 edition = "2024"
 publish = false
+repository = "https://github.com/990466307/mirsa"
 
 [dependencies]
-mirsa_analysis = { package = "mirsa-analysis", path = "../analysis", version = "0.2.3" }
-mirsa_core = { package = "mirsa-core", path = "../core", version = "0.2.3" }
+mirsa_analysis = { package = "mirsa-analysis", path = "../analysis", version = "0.3.0" }
+mirsa_core = { package = "mirsa-core", path = "../core", version = "0.3.0" }
 
 [package.metadata.rust-analyzer]
 rustc_private = true

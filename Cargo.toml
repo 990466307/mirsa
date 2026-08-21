@@ -12,19 +12,21 @@ resolver = "2"
 
 [package]
 name = "mirsa"
-version = "0.2.3"
+version = "0.3.0"
 edition = "2024"
 
 description = "rust mir static analysis"
 license = "MIT"
+repository = "https://github.com/990466307/mirsa"
+include = ["src/**", "Cargo.toml", "README.md", "rust-toolchain.toml"]
 
 [dependencies]
-mirsa_analysis = { package = "mirsa-analysis", path = "crates/analysis", version = "0.2.3" }
-mirsa_contracts = { package = "mirsa-contracts", path = "crates/contracts", version = "0.2.3" }
-mirsa_core = { package = "mirsa-core", path = "crates/core", version = "0.2.3" }
-mirsa_domains = { package = "mirsa-domains", path = "crates/domains", version = "0.2.3" }
-mirsa_framework = { package = "mirsa-framework", path = "crates/framework", version = "0.2.3" }
-mirsa_relations = { package = "mirsa-relations", path = "crates/relations", version = "0.2.3" }
+mirsa_analysis = { package = "mirsa-analysis", path = "crates/analysis", version = "0.3.0" }
+mirsa_contracts = { package = "mirsa-contracts", path = "crates/contracts", version = "0.3.0" }
+mirsa_core = { package = "mirsa-core", path = "crates/core", version = "0.3.0" }
+mirsa_domains = { package = "mirsa-domains", path = "crates/domains", version = "0.3.0" }
+mirsa_framework = { package = "mirsa-framework", path = "crates/framework", version = "0.3.0" }
+mirsa_relations = { package = "mirsa-relations", path = "crates/relations", version = "0.3.0" }
 
 [package.metadata.rust-analyzer]
 rustc_private = true

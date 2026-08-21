@@ -5,3 +5,6 @@ interval.max_iterations = 8
 
 nullptr.max_paths = 8
 nullptr.max_iterations = none
+
+allocation.max_paths = 8
+allocation.max_iterations = 8
