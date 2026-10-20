@@ -1,19 +1,24 @@
 use mirsa_domains::allocation::AllocationState;
 use mirsa_domains::interval::IntervalState;
 use mirsa_domains::nullptr::NullPtrState;
+use mirsa_framework::access_path::AccessPath;
 use mirsa_framework::forward::DomainState;
 use mirsa_framework::printer::StateEntries;
 use mirsa_relations::symbolic::SymbolicState;
 use rustc_middle::mir::Place;
+use std::collections::HashSet;
 use std::fmt;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct CombinedState<'tcx> {
     pub symbolic: SymbolicState<'tcx>,
     pub interval: IntervalState<'tcx>,
     pub nullptr: NullPtrState<'tcx>,
     pub allocation: AllocationState<'tcx>,
     pub reduce_debug: bool,
+    pub(crate) feasible: bool,
+    pub(crate) writes: Option<HashSet<AccessPath>>,
+    pub(super) reduction_memo: super::memo::ReductionMemo<'tcx>,
 }
 
 impl<'tcx> CombinedState<'tcx> {
@@ -44,6 +49,9 @@ impl<'tcx> CombinedState<'tcx> {
             nullptr,
             allocation,
             reduce_debug,
+            feasible: true,
+            writes: None,
+            reduction_memo: Default::default(),
         }
     }
 
@@ -60,6 +68,9 @@ impl<'tcx> CombinedState<'tcx> {
             nullptr,
             allocation,
             reduce_debug,
+            feasible: true,
+            writes: None,
+            reduction_memo: Default::default(),
         }
     }
 
@@ -68,39 +79,83 @@ impl<'tcx> CombinedState<'tcx> {
             eprintln!("[reduce] {args}");
         }
     }
+
+    pub(crate) fn record_writes(&mut self, paths: impl IntoIterator<Item = AccessPath>) {
+        if let Some(writes) = &mut self.writes {
+            writes.extend(paths);
+        }
+    }
+
+    pub(crate) fn extend(&mut self, other: Self) {
+        self.symbolic.extend(other.symbolic);
+        self.interval.extend(other.interval);
+        self.nullptr.extend(other.nullptr);
+        self.allocation.extend(other.allocation);
+    }
 }
 
 impl<'tcx> DomainState<'tcx> for CombinedState<'tcx> {
     fn join(left: &Self, right: &Self) -> Self {
-        let mut out = Self {
+        if !left.feasible {
+            return right.clone();
+        }
+        if !right.feasible {
+            return left.clone();
+        }
+        Self {
             symbolic: SymbolicState::join(&left.symbolic, &right.symbolic),
             interval: IntervalState::join(&left.interval, &right.interval),
             nullptr: NullPtrState::join(&left.nullptr, &right.nullptr),
             allocation: AllocationState::join(&left.allocation, &right.allocation),
             reduce_debug: left.reduce_debug || right.reduce_debug,
-        };
-        out.synchronize_domains();
-        out
+            feasible: true,
+            writes: merge_writes(left, right),
+            reduction_memo: Default::default(),
+        }
     }
 
     fn widen(previous: &Self, next: &Self) -> Self {
-        let mut out = Self {
+        if !previous.feasible {
+            return next.clone();
+        }
+        if !next.feasible {
+            return previous.clone();
+        }
+        Self {
             symbolic: SymbolicState::join(&previous.symbolic, &next.symbolic),
             interval: IntervalState::widen(&previous.interval, &next.interval),
             nullptr: NullPtrState::widen(&previous.nullptr, &next.nullptr),
             allocation: AllocationState::widen(&previous.allocation, &next.allocation),
             reduce_debug: previous.reduce_debug || next.reduce_debug,
-        };
-        out.synchronize_domains();
-        out
+            feasible: true,
+            writes: merge_writes(previous, next),
+            reduction_memo: Default::default(),
+        }
     }
 
     fn state_changed(previous: &Self, next: &Self) -> bool {
-        IntervalState::state_changed(&previous.interval, &next.interval)
+        previous.feasible != next.feasible
+            || previous.writes != next.writes
+            || IntervalState::state_changed(&previous.interval, &next.interval)
             || NullPtrState::state_changed(&previous.nullptr, &next.nullptr)
             || AllocationState::state_changed(&previous.allocation, &next.allocation)
             || previous.symbolic != next.symbolic
             || previous.reduce_debug != next.reduce_debug
+    }
+}
+
+fn merge_writes(
+    left: &CombinedState<'_>,
+    right: &CombinedState<'_>,
+) -> Option<HashSet<AccessPath>> {
+    match (&left.writes, &right.writes) {
+        (None, None) => None,
+        (left, right) => Some(
+            left.iter()
+                .chain(right.iter())
+                .flat_map(|paths| paths.iter().cloned())
+                .collect(),
+        ),
     }
 }
 
@@ -147,3 +202,17 @@ impl<'tcx> StateEntries<'tcx> for CombinedState<'tcx> {
             || self.allocation.should_print_entry(place)
     }
 }
+
+// Cache history must not participate in abstract-state equality or convergence.
+impl PartialEq for CombinedState<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.symbolic == other.symbolic
+            && self.interval == other.interval
+            && self.nullptr == other.nullptr
+            && self.allocation == other.allocation
+            && self.reduce_debug == other.reduce_debug
+            && self.feasible == other.feasible
+            && self.writes == other.writes
+    }
+}
+impl Eq for CombinedState<'_> {}

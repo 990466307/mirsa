@@ -1,3 +1,4 @@
+use super::refine::{refine_float_place, refine_integer_place};
 use mirsa_domains::interval::abstract_value::intersect;
 use mirsa_domains::interval::float_interval::{intersect as intersect_float, next_down, next_up};
 use mirsa_domains::interval::state::IntervalState;
@@ -18,6 +19,10 @@ pub fn reduce_fact<'tcx>(
     symbolic: &mut SymbolicState<'tcx>,
     fact: &SymbolicFact<'tcx>,
 ) -> bool {
+    let (SymbolicFact::EqConst { expr, .. } | SymbolicFact::NeConst { expr, .. }) = fact;
+    if !constrain_integer_type(tcx, local_decls, state, symbolic, expr) {
+        return false;
+    }
     match fact {
         SymbolicFact::EqConst { expr, value } => {
             let expr_ty = expr.ty(local_decls, tcx);
@@ -44,11 +49,10 @@ pub fn reduce_fact<'tcx>(
             let Some(place) = integer_place_operand(local_decls, tcx, expr) else {
                 return true;
             };
-            let current = state.read_interval_resolved(symbolic, place);
-            if current.is_empty() || current.low != current.high {
+            let Some(value) = switch_value_to_i128(tcx, expr.ty(local_decls, tcx), *value) else {
                 return true;
-            }
-            switch_value_to_i128(tcx, expr.ty(local_decls, tcx), *value) != Some(current.low)
+            };
+            exclude_integer_value(state, symbolic, place, value)
         }
     }
 }
@@ -82,16 +86,31 @@ fn refine_bool_expr<'tcx>(
     let (Operand::Copy(place) | Operand::Move(place)) = discr else {
         return true;
     };
-    let Some(expr) = symbolic.expr_for_place(*place).cloned() else {
+    let Some(expr) = super::expression(symbolic, *place).cloned() else {
         return true;
     };
     match expr {
+        SymbolicExpr::Pointer { .. }
+        | SymbolicExpr::PointerFromAddress { .. }
+        | SymbolicExpr::Value(_)
+        | SymbolicExpr::Address { .. }
+        | SymbolicExpr::Length { .. } => true,
         SymbolicExpr::Cmp { op, left, right } => {
             refine_comparison(tcx, local_decls, state, symbolic, op, truth, &left, &right)
         }
         SymbolicExpr::Call { callee, args } => {
-            let path = tcx.def_path_str(callee);
-            if !path.ends_with("::is_empty") {
+            let length_method = tcx.impl_of_method(callee).is_some_and(|id| {
+                let ty = tcx.type_of(id).instantiate_identity();
+                tcx.trait_id_of_impl(id).is_none()
+                    && match ty.kind() {
+                        TyKind::Slice(_) | TyKind::Str => true,
+                        TyKind::Adt(adt, _) => ["Vec", "String"].iter().any(|name| {
+                            tcx.is_diagnostic_item(rustc_span::Symbol::intern(name), adt.did())
+                        }),
+                        _ => false,
+                    }
+            });
+            if tcx.item_name(callee).as_str() != "is_empty" || !length_method {
                 return true;
             }
             args.first()
@@ -129,6 +148,12 @@ fn refine_integer_comparison<'tcx>(
     left: &Operand<'tcx>,
     right: &Operand<'tcx>,
 ) -> bool {
+    if !symbolic.comparison_may_hold(tcx, local_decls, op, truth, left, right)
+        || !constrain_integer_type(tcx, local_decls, state, symbolic, left)
+        || !constrain_integer_type(tcx, local_decls, state, symbolic, right)
+    {
+        return false;
+    }
     let left_iv = eval_operand(tcx, local_decls, left, symbolic, state);
     let right_iv = eval_operand(tcx, local_decls, right, symbolic, state);
     state.debug(format_args!(
@@ -162,6 +187,15 @@ fn refine_integer_comparison<'tcx>(
             }
         }
         (BinOp::Eq, false) | (BinOp::Ne, true) => {
+            for (operand, excluded) in [(left, right_singleton), (right, left_singleton)] {
+                if let (Some(place), Some(value)) =
+                    (integer_place_operand(local_decls, tcx, operand), excluded)
+                {
+                    if !exclude_integer_value(state, symbolic, place, value) {
+                        return false;
+                    }
+                }
+            }
             if left_singleton.is_some()
                 && left_singleton == right_singleton
                 && !left_iv.is_empty()
@@ -177,7 +211,7 @@ fn refine_integer_comparison<'tcx>(
                 local_decls,
                 tcx,
                 left,
-                right_singleton,
+                finite_upper(right_iv),
                 true,
             ) || !refine_integer_lower(
                 state,
@@ -185,7 +219,7 @@ fn refine_integer_comparison<'tcx>(
                 local_decls,
                 tcx,
                 right,
-                left_singleton,
+                finite_lower(left_iv),
                 true,
             ) {
                 return false;
@@ -198,7 +232,7 @@ fn refine_integer_comparison<'tcx>(
                 local_decls,
                 tcx,
                 left,
-                right_singleton,
+                finite_lower(right_iv),
                 false,
             ) || !refine_integer_upper(
                 state,
@@ -206,7 +240,7 @@ fn refine_integer_comparison<'tcx>(
                 local_decls,
                 tcx,
                 right,
-                left_singleton,
+                finite_upper(left_iv),
                 false,
             ) {
                 return false;
@@ -219,7 +253,7 @@ fn refine_integer_comparison<'tcx>(
                 local_decls,
                 tcx,
                 left,
-                right_singleton,
+                finite_upper(right_iv),
                 false,
             ) || !refine_integer_lower(
                 state,
@@ -227,7 +261,7 @@ fn refine_integer_comparison<'tcx>(
                 local_decls,
                 tcx,
                 right,
-                left_singleton,
+                finite_lower(left_iv),
                 false,
             ) {
                 return false;
@@ -240,7 +274,7 @@ fn refine_integer_comparison<'tcx>(
                 local_decls,
                 tcx,
                 left,
-                right_singleton,
+                finite_lower(right_iv),
                 true,
             ) || !refine_integer_upper(
                 state,
@@ -248,7 +282,7 @@ fn refine_integer_comparison<'tcx>(
                 local_decls,
                 tcx,
                 right,
-                left_singleton,
+                finite_upper(left_iv),
                 true,
             ) {
                 return false;
@@ -257,6 +291,14 @@ fn refine_integer_comparison<'tcx>(
         _ => {}
     }
     true
+}
+
+fn finite_upper(value: Interval) -> Option<i128> {
+    (!value.is_empty() && value.high != i128::MAX).then_some(value.high)
+}
+
+fn finite_lower(value: Interval) -> Option<i128> {
+    (!value.is_empty() && value.low != i128::MIN).then_some(value.low)
 }
 
 fn singleton(value: Interval) -> Option<i128> {
@@ -303,42 +345,6 @@ fn refine_integer_lower<'tcx>(
         bound
     };
     refine_integer_place(state, symbolic, place, Interval::new(low, i128::MAX))
-}
-
-fn refine_integer_place<'tcx>(
-    state: &mut IntervalState<'tcx>,
-    symbolic: &SymbolicState<'tcx>,
-    place: Place<'tcx>,
-    wanted: Interval,
-) -> bool {
-    let current = state.read_interval_resolved(symbolic, place);
-    if current.is_empty() {
-        return true;
-    }
-    let refined = intersect(&current, &wanted);
-    if refined.is_empty() {
-        return false;
-    }
-    state.debug(format_args!(
-        "reduce {:?}: {} ∩ {} = {}",
-        place, current, wanted, refined
-    ));
-    state.set_interval_resolved(symbolic, place, refined);
-    for other in state.interval_places() {
-        if other == place || !symbolic.equiv_places_readonly(place, other) {
-            continue;
-        }
-        let other_current = state.read_interval_resolved(symbolic, other);
-        if other_current.is_empty() {
-            continue;
-        }
-        let other_refined = intersect(&other_current, &refined);
-        if other_refined.is_empty() {
-            return false;
-        }
-        state.set_interval_resolved(symbolic, other, other_refined);
-    }
-    true
 }
 
 fn refine_float_comparison<'tcx>(
@@ -452,42 +458,6 @@ fn refine_float_comparison<'tcx>(
     true
 }
 
-fn refine_float_place<'tcx>(
-    state: &mut IntervalState<'tcx>,
-    symbolic: &SymbolicState<'tcx>,
-    place: Place<'tcx>,
-    wanted: FloatInterval,
-) -> bool {
-    let current = state.read_float_interval_resolved(symbolic, place);
-    if current.is_bottom() {
-        return true;
-    }
-    let refined = intersect_float(&current, &wanted);
-    if refined.is_bottom() {
-        return false;
-    }
-    state.debug(format_args!(
-        "reduce float {:?}: {} ∩ {} = {}",
-        place, current, wanted, refined
-    ));
-    state.set_float_interval_resolved(symbolic, place, refined);
-    for other in state.float_interval_places() {
-        if other == place || !symbolic.equiv_places_readonly(place, other) {
-            continue;
-        }
-        let other_current = state.read_float_interval_resolved(symbolic, other);
-        if other_current.is_bottom() {
-            continue;
-        }
-        let other_refined = intersect_float(&other_current, &refined);
-        if other_refined.is_bottom() {
-            return false;
-        }
-        state.set_float_interval_resolved(symbolic, other, other_refined);
-    }
-    true
-}
-
 fn refine_is_empty<'tcx>(
     state: &mut IntervalState<'tcx>,
     symbolic: &SymbolicState<'tcx>,
@@ -558,4 +528,63 @@ fn float_place_operand<'tcx>(
         return None;
     };
     float_kind_for_ty(place.ty(local_decls, tcx).ty).map(|_| *place)
+}
+
+fn constrain_integer_type<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    local_decls: &LocalDecls<'tcx>,
+    state: &mut IntervalState<'tcx>,
+    symbolic: &SymbolicState<'tcx>,
+    operand: &Operand<'tcx>,
+) -> bool {
+    let Some(place) = integer_place_operand(local_decls, tcx, operand) else {
+        return true;
+    };
+    let ty = operand.ty(local_decls, tcx);
+    let bounds = match ty.kind() {
+        TyKind::Uint(kind) => {
+            let bits = kind
+                .bit_width()
+                .unwrap_or(tcx.data_layout.pointer_size.bits());
+            if bits == 128 {
+                return true;
+            }
+            Interval::new(0, (1_i128 << bits) - 1)
+        }
+        TyKind::Int(kind) => {
+            let bits = kind
+                .bit_width()
+                .unwrap_or(tcx.data_layout.pointer_size.bits());
+            if bits == 128 {
+                return true;
+            }
+            Interval::new(-(1_i128 << (bits - 1)), (1_i128 << (bits - 1)) - 1)
+        }
+        TyKind::Bool => Interval::new(0, 1),
+        TyKind::Char => Interval::new(0, 0x10ffff),
+        _ => return true,
+    };
+    refine_integer_place(state, symbolic, place, bounds)
+}
+
+fn exclude_integer_value<'tcx>(
+    state: &mut IntervalState<'tcx>,
+    symbolic: &SymbolicState<'tcx>,
+    place: Place<'tcx>,
+    excluded: i128,
+) -> bool {
+    let mut value = state.read_interval_resolved(symbolic, place);
+    if value.is_empty() {
+        return true;
+    }
+    if value.low == excluded && value.high == excluded {
+        return false;
+    }
+    if value.low == excluded {
+        value.low += 1;
+    }
+    if value.high == excluded {
+        value.high -= 1;
+    }
+    refine_integer_place(state, symbolic, place, value)
 }

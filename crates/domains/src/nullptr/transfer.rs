@@ -126,6 +126,24 @@ pub fn eval_operand<'tcx>(
         }
         Operand::Constant(c) => {
             if is_ptr_like(dst_ty) {
+                if matches!(c.ty().kind(), TyKind::Int(_) | TyKind::Uint(_)) {
+                    if let Some(value) = c
+                        .const_
+                        .try_eval_scalar_int(tcx, TypingEnv::fully_monomorphized())
+                    {
+                        let width = tcx.data_layout.pointer_size.bits();
+                        let mask = if width < 128 {
+                            (1u128 << width) - 1
+                        } else {
+                            u128::MAX
+                        };
+                        return if value.to_bits_unchecked() & mask == 0 {
+                            NullPtr::Null
+                        } else {
+                            NullPtr::NonNull
+                        };
+                    }
+                }
                 const_nullness(tcx, c).unwrap_or_else(|| unknown_value_for_type(dst_ty))
             } else {
                 NullPtr::Bot
@@ -347,24 +365,39 @@ pub fn transfer_terminator<'tcx>(
     } = &term.kind
     {
         let dst_ty = destination.ty(local_decls, tcx).ty;
+        if !is_tracked(dst_ty) {
+            if let Some(path) = st.access_path_for_place_resolved(symbolic, *destination) {
+                st.invalidate_paths(symbolic, &[path]);
+            }
+        }
         if is_tracked(dst_ty) {
             if let Some(dst_path) = st.access_path_for_place_resolved(symbolic, *destination) {
                 let mut handled = false;
                 if let TyKind::FnDef(def_id, _) = func.ty(local_decls, tcx).kind() {
                     let name = tcx.def_path_str(*def_id);
                     st.debug(format_args!("call {:?} := {name}", destination));
+                    let standard = !def_id.is_local()
+                        && matches!(
+                            tcx.crate_name(def_id.krate).as_str(),
+                            "core" | "alloc" | "std"
+                        );
+                    if !standard {
+                        st.set_path(dst_path, unknown_value_for_type(dst_ty));
+                        return;
+                    }
+
                     if (name.ends_with("::null") || name.ends_with("::null_mut"))
                         && name.contains("::ptr::")
                     {
                         st.set_path(dst_path.clone(), NullPtr::Null);
                         handled = true;
-                    } else if name.ends_with("::cast")
-                        || name.ends_with("::cast_const")
-                        || name.ends_with("::cast_mut")
-                        || name.ends_with("::with_addr")
-                        || name.ends_with("::map_addr")
+                    } else if let Some(view) =
+                        mirsa_framework::call_model::PointerView::classify(tcx, func, local_decls)
                     {
-                        if let Some(first) = args.first() {
+                        if let Some(source) = args
+                            .first()
+                            .and_then(|arg| view.source(tcx, local_decls, &arg.node))
+                        {
                             assign_place_from_operand(
                                 tcx,
                                 local_decls,
@@ -372,8 +405,8 @@ pub fn transfer_terminator<'tcx>(
                                 symbolic,
                                 *destination,
                                 dst_ty,
-                                &first.node,
-                                "call-cast",
+                                &source,
+                                "pointer-view",
                             );
                             handled = true;
                         }

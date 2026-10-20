@@ -6,3 +6,4 @@ extern crate rustc_middle;
 extern crate rustc_span;
 
 pub mod symbolic;
+pub mod value_expr;

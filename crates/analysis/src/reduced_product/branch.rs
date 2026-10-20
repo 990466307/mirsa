@@ -26,6 +26,9 @@ pub fn refine_edge<'tcx>(
     succ: BasicBlock,
     in_state: &CombinedState<'tcx>,
 ) -> Option<CombinedState<'tcx>> {
+    if !in_state.feasible {
+        return None;
+    }
     let term = body.basic_blocks[pred].terminator.as_ref()?;
     in_state.interval.debug(format_args!(
         "refine edge bb{} -> bb{} by {:?}",
@@ -35,12 +38,31 @@ pub fn refine_edge<'tcx>(
     ));
 
     match &term.kind {
-        TerminatorKind::Goto { target } => {
+        TerminatorKind::Goto { target } => (*target == succ).then(|| in_state.clone()),
+        TerminatorKind::Assert {
+            cond,
+            expected,
+            target,
+            ..
+        } => {
             if *target != succ {
                 return None;
             }
             let mut out = in_state.clone();
-            out.refine_with_path_facts(tcx, &body.local_decls)
+            match cond {
+                Operand::Copy(_) | Operand::Move(_) => {
+                    out.symbolic
+                        .assume_eq_const(cond.clone(), u128::from(*expected));
+                }
+                Operand::Constant(c) => {
+                    if let Some(value) = c.const_.try_to_scalar_int() {
+                        if value.to_bits_unchecked() != u128::from(*expected) {
+                            return None;
+                        }
+                    }
+                }
+            }
+            out.demand_terminator(tcx, &body.local_decls, term)
                 .then_some(out)
         }
         TerminatorKind::SwitchInt { discr, targets } => {
@@ -75,7 +97,7 @@ pub fn refine_edge<'tcx>(
                         }
                     }
 
-                    out.refine_with_path_facts(tcx, &body.local_decls)
+                    out.demand_terminator(tcx, &body.local_decls, term)
                         .then_some(out)
                 }
                 Operand::Constant(c) => {
@@ -84,9 +106,7 @@ pub fn refine_edge<'tcx>(
                         .try_to_scalar_int()
                         .map(|value| (value.to_bits_unchecked(), value.size().bits()))
                     else {
-                        return out
-                            .refine_with_path_facts(tcx, &body.local_decls)
-                            .then_some(out);
+                        return Some(out);
                     };
                     let normalize = |value: u128| {
                         if bit_width == 128 {
@@ -101,8 +121,7 @@ pub fn refine_edge<'tcx>(
                     let matches_any_value =
                         all_values.iter().any(|value| normalize(*value) == constant);
                     if matches_succ_value || (is_otherwise && !matches_any_value) {
-                        out.refine_with_path_facts(tcx, &body.local_decls)
-                            .then_some(out)
+                        Some(out)
                     } else {
                         None
                     }
@@ -111,7 +130,7 @@ pub fn refine_edge<'tcx>(
         }
         _ => {
             let mut out = in_state.clone();
-            out.refine_with_path_facts(tcx, &body.local_decls)
+            out.demand_terminator(tcx, &body.local_decls, term)
                 .then_some(out)
         }
     }

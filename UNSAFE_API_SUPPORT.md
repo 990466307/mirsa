@@ -1,73 +1,15 @@
-# Unsafe API 支持情况
+# 内置检查与查询能力
 
-本文档总结了 `mirsa` 当前两个分析域已经覆盖的 unsafe API。
+MIRSA 的通用入口是 DSL 查询，支持的表达式见 [完整文法](crates/dsl/grammar.ebnf)，使用方法见 [README](README.md)。下表仅介绍驱动程序保留的内置检查，不代表每个 API 的全部安全要求都已覆盖。
 
-## interval 域
+| 内置检查 | 涉及的 API | 实现 |
+|---|---|---|
+| 非零 | `NonZero::new_unchecked` | [nonzero.rs](crates/contracts/src/interval/nonzero.rs) |
+| 下标、切分位置边界 | 切片 `get_unchecked` / `get_unchecked_mut` / `split_at_unchecked` / `split_at_mut_unchecked` | [slice_bounds.rs](crates/contracts/src/interval/slice_bounds.rs) |
+| 复制长度 | `copy_nonoverlapping` 的源和目标空间 | [copy_nonoverlapping.rs](crates/contracts/src/interval/copy_nonoverlapping.rs) |
+| 指针非空 | `NonNull::new_unchecked`、`CStr::from_ptr`、`Vec::from_raw_parts`、切片 `from_raw_parts` / `from_raw_parts_mut`、`ptr::read` / `ptr::write` | [nonnull_arg.rs](crates/contracts/src/nullptr/nonnull_arg.rs) |
+| 复制指针非空 | `copy_nonoverlapping` 的源和目标指针 | [copy_nonoverlapping.rs](crates/contracts/src/nullptr/copy_nonoverlapping.rs) |
 
-入口文件：
-- [`crates/domains/src/interval/warnings/mod.rs`](/home/wentao/mirsa/crates/domains/src/interval/warnings/mod.rs)
+例如 `CStr::from_ptr` 的非空性通过，不代表 NUL 终止、内存有效性等要求已经满足。通用 DSL 的性质验证和以上内置检查是不同入口；接入自己的方法或 Agent 时，按需要选择具体性质。
 
-当前支持的 unsafe API：
-- `NonZero::new_unchecked`
-  - 规则文件：
-    [`crates/domains/src/interval/warnings/nonzero.rs`](/home/wentao/mirsa/crates/domains/src/interval/warnings/nonzero.rs)
-  - 安全性质：
-    参数必须非零
-
-- `slice::get_unchecked`
-- `slice::get_unchecked_mut`
-- `slice::split_at_unchecked`
-- `slice::split_at_mut_unchecked`
-  - 规则文件：
-    [`crates/domains/src/interval/warnings/slice_bounds.rs`](/home/wentao/mirsa/crates/domains/src/interval/warnings/slice_bounds.rs)
-  - 安全性质：
-    - `get_unchecked` / `get_unchecked_mut`：`index < len`
-    - `split_at_unchecked` / `split_at_mut_unchecked`：`mid <= len`
-
-- `ptr::copy_nonoverlapping`
-  - 规则文件：
-    [`crates/domains/src/interval/warnings/copy_nonoverlapping.rs`](/home/wentao/mirsa/crates/domains/src/interval/warnings/copy_nonoverlapping.rs)
-  - 安全性质：
-    `count` 不能超过源对象和目标对象的可用长度
-
-辅助函数：
-- [`crates/domains/src/interval/warnings/shared.rs`](/home/wentao/mirsa/crates/domains/src/interval/warnings/shared.rs)
-
-## Nullptr 域
-
-入口文件：
-- [`crates/domains/src/nullptr/warnings/mod.rs`](/home/wentao/mirsa/crates/domains/src/nullptr/warnings/mod.rs)
-
-当前支持的 unsafe API：
-- `NonNull::new_unchecked`
-- `CStr::from_ptr`
-- `Vec::from_raw_parts`
-- `slice::from_raw_parts`
-- `slice::from_raw_parts_mut`
-- `ptr::read`
-- `ptr::write`
-  - 规则文件：
-    [`crates/domains/src/nullptr/warnings/nonnull_arg.rs`](/home/wentao/mirsa/crates/domains/src/nullptr/warnings/nonnull_arg.rs)
-  - 安全性质：
-    指针参数必须非空
-
-- `ptr::copy_nonoverlapping`
-- `intrinsics::copy_nonoverlapping`
-  - 规则文件：
-    [`crates/domains/src/nullptr/warnings/copy_nonoverlapping.rs`](/home/wentao/mirsa/crates/domains/src/nullptr/warnings/copy_nonoverlapping.rs)
-  - 安全性质：
-    源指针和目标指针参数都必须非空
-
-辅助函数：
-- [`crates/domains/src/nullptr/warnings/shared.rs`](/home/wentao/mirsa/crates/domains/src/nullptr/warnings/shared.rs)
-
-## 最终测试集
-
-当前的最终数据集主要覆盖上述 API，并保留对应 Safe4U 原始片段：
-- 数值类，22 个样例：
-  [`examples/safe4u_final_numeric`](/home/wentao/mirsa/examples/safe4u_final_numeric)
-- 指针类，21 个样例：
-  [`examples/safe4u_final_pointer`](/home/wentao/mirsa/examples/safe4u_final_pointer)
-
-更详细的测试集说明见：
-- [`TEST_SUITE.md`](/home/wentao/mirsa/TEST_SUITE.md)
+已有 Safe4U 衍生示例及验证方式见 [测试说明](TEST_SUITE.md)。

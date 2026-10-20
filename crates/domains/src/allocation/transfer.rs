@@ -1,7 +1,7 @@
 use super::abstract_value::{AllocationId, AllocationSite, LayoutValue, PointerValue};
 use super::state::{
-    AllocationState, is_allocation_pointer, is_layout_ty, is_non_null_ty, pointer_pointee_type,
-    type_size,
+    AllocationState, is_allocation_pointer, is_layout_result_ty, is_layout_ty, is_non_null_ty,
+    pointer_pointee_type, type_size,
 };
 use crate::interval::abstract_value::{Interval, div, mul, neg, sub};
 use mirsa_framework::access_path::AccessPath;
@@ -62,9 +62,12 @@ fn transfer_assign<'tcx>(
     }
 
     let destination_ty = destination.ty(local_decls, tcx).ty;
-    let destination_path = state.pointer_path_resolved(symbolic, destination);
 
-    if is_layout_ty(tcx, destination_ty) {
+    if super::buffer::assign(tcx, symbolic, state, destination, rvalue, local_decls) {
+        return;
+    }
+
+    if is_layout_ty(tcx, destination_ty) || is_layout_result_ty(tcx, destination_ty) {
         let value = match rvalue {
             Rvalue::Use(Operand::Copy(source) | Operand::Move(source)) => {
                 state.layout_value_resolved(symbolic, *source)
@@ -89,13 +92,8 @@ fn transfer_assign<'tcx>(
     }
 
     if !is_allocation_pointer(tcx, destination_ty) {
-        if let Rvalue::Use(Operand::Copy(source) | Operand::Move(source)) = rvalue {
-            if let (Some(destination_path), Some(source_path)) = (
-                destination_path,
-                state.pointer_path_resolved(symbolic, *source),
-            ) {
-                state.copy_pointer_tree(&destination_path, &source_path, PointerValue::top());
-            }
+        if let Rvalue::Use(operand) = rvalue {
+            state.assign_from_operand(symbolic, destination, operand);
         }
         return;
     }
@@ -184,7 +182,7 @@ fn transfer_aggregate<'tcx>(
                 transfer_aggregate_operand(tcx, symbolic, state, field, operand, local_decls);
             }
         }
-        AggregateKind::Array(element_ty) => {
+        AggregateKind::Array(_) => {
             let len = operands.len() as u64;
             for (index, operand) in operands.iter().enumerate() {
                 let element = destination.project_deeper(
@@ -195,25 +193,39 @@ fn transfer_aggregate<'tcx>(
                     }],
                     tcx,
                 );
-                if is_allocation_pointer(tcx, *element_ty) {
-                    transfer_aggregate_operand(tcx, symbolic, state, element, operand, local_decls);
-                }
+                transfer_aggregate_operand(tcx, symbolic, state, element, operand, local_decls);
+            }
+        }
+        AggregateKind::Adt(_, variant, _, _, _) => {
+            let ty = destination.ty(local_decls, tcx).ty;
+            if is_allocation_pointer(tcx, ty) {
+                let value = operands
+                    .first()
+                    .map(|operand| {
+                        eval_pointer_operand(tcx, symbolic, state, operand, local_decls, ty)
+                    })
+                    .unwrap_or_else(PointerValue::top);
+                state.set_pointer_resolved(symbolic, destination, value);
+            }
+            let mut base = destination;
+            if matches!(destination.ty(local_decls, tcx).ty.kind(), TyKind::Adt(def, _) if def.is_enum())
+            {
+                base = base.project_deeper(&[ProjectionElem::Downcast(None, *variant)], tcx);
+            }
+            for (index, operand) in operands.iter().enumerate() {
+                let field = base.project_deeper(
+                    &[ProjectionElem::Field(
+                        index.into(),
+                        operand.ty(local_decls, tcx),
+                    )],
+                    tcx,
+                );
+                transfer_aggregate_operand(tcx, symbolic, state, field, operand, local_decls);
             }
         }
         _ => {
-            // ADT field paths are copied by suffix when the operand itself is
-            // an aggregate carrying tracked pointer fields.
             for operand in operands {
-                let (Operand::Copy(source) | Operand::Move(source)) = operand else {
-                    continue;
-                };
-                let (Some(dst), Some(src)) = (
-                    state.pointer_path_resolved(symbolic, destination),
-                    state.pointer_path_resolved(symbolic, *source),
-                ) else {
-                    continue;
-                };
-                state.copy_pointer_tree(&dst, &src, PointerValue::top());
+                state.assign_from_operand(symbolic, destination, operand);
             }
         }
     }
@@ -231,13 +243,8 @@ fn transfer_aggregate_operand<'tcx>(
     if is_allocation_pointer(tcx, ty) {
         let value = eval_pointer_operand(tcx, symbolic, state, operand, local_decls, ty);
         state.set_pointer_resolved(symbolic, destination, value);
-    } else if let Operand::Copy(source) | Operand::Move(source) = operand {
-        if let (Some(dst), Some(src)) = (
-            state.pointer_path_resolved(symbolic, destination),
-            state.pointer_path_resolved(symbolic, *source),
-        ) {
-            state.copy_pointer_tree(&dst, &src, PointerValue::top());
-        }
+    } else {
+        state.assign_from_operand(symbolic, destination, operand);
     }
 }
 
@@ -249,6 +256,9 @@ pub fn transfer_terminator<'tcx>(
     local_decls: &LocalDecls<'tcx>,
     mut integer_value: impl FnMut(&Operand<'tcx>) -> Interval,
 ) {
+    if super::buffer::apply(tcx, symbolic, state, term, local_decls, &mut integer_value) {
+        return;
+    }
     let TerminatorKind::Call {
         func,
         args,
@@ -260,10 +270,11 @@ pub fn transfer_terminator<'tcx>(
     };
     let destination_ty = destination.ty(local_decls, tcx).ty;
     let Some((def_id, generic_args)) = call_def(tcx, local_decls, func) else {
+        state.forget_call_result(symbolic, *destination);
         if is_allocation_pointer(tcx, destination_ty) {
             state.set_pointer_resolved(symbolic, *destination, PointerValue::top());
         }
-        if is_layout_ty(tcx, destination_ty) {
+        if is_layout_ty(tcx, destination_ty) || is_layout_result_ty(tcx, destination_ty) {
             state.set_layout_resolved(symbolic, *destination, LayoutValue::top());
         }
         return;
@@ -271,18 +282,92 @@ pub fn transfer_terminator<'tcx>(
     let path = tcx.def_path_str(def_id);
     state.debug(format_args!("call {destination:?} := {path}"));
 
-    if is_layout_ty(tcx, destination_ty) {
-        let layout = layout_constructor_value(
-            tcx,
-            state,
-            symbolic,
-            local_decls,
-            &path,
-            generic_args,
-            args,
-            &mut integer_value,
-        )
-        .unwrap_or_else(LayoutValue::top);
+    if is_layout_ty(tcx, destination_ty) || is_layout_result_ty(tcx, destination_ty) {
+        let layout = is_layout_ty(tcx, destination_ty)
+            .then(|| {
+                layout_constructor_value(
+                    tcx,
+                    state,
+                    symbolic,
+                    local_decls,
+                    &path,
+                    generic_args,
+                    args,
+                    &mut integer_value,
+                )
+            })
+            .flatten()
+            .or_else(|| {
+                let name = tcx.item_name(def_id);
+                if !def_id.is_local()
+                    && matches!(
+                        tcx.crate_name(def_id.krate).as_str(),
+                        "core" | "alloc" | "std"
+                    )
+                {
+                    if name.as_str() == "unwrap" && is_layout_ty(tcx, destination_ty) {
+                        if let Some(arg) = args.first() {
+                            if is_layout_result_ty(tcx, arg.node.ty(local_decls, tcx)) {
+                                if let Operand::Copy(source) | Operand::Move(source) = &arg.node {
+                                    return Some(state.layout_value_resolved(symbolic, *source));
+                                }
+                            }
+                        }
+                    }
+                    if is_layout_result_ty(tcx, destination_ty)
+                        && tcx.impl_of_method(def_id).is_some_and(|id| {
+                            is_layout_ty(tcx, tcx.type_of(id).instantiate_identity())
+                        })
+                    {
+                        let value = if name.as_str() == "from_size_align" && args.len() == 2 {
+                            Some(LayoutValue::new(
+                                integer_value(&args[0].node),
+                                integer_value(&args[1].node),
+                            ))
+                        } else if name.as_str() == "array" && args.len() == 1 {
+                            generic_args
+                                .types()
+                                .next()
+                                .and_then(|ty| {
+                                    tcx.layout_of(
+                                        TypingEnv::fully_monomorphized().as_query_input(ty),
+                                    )
+                                    .ok()
+                                })
+                                .and_then(|layout| {
+                                    let count = integer_value(&args[0].node);
+                                    let size = layout.size.bytes() as i128;
+                                    Some(LayoutValue::new(
+                                        Interval::new(
+                                            count.low.checked_mul(size)?,
+                                            count.high.checked_mul(size)?,
+                                        ),
+                                        Interval::new(
+                                            layout.align.abi.bytes() as i128,
+                                            layout.align.abi.bytes() as i128,
+                                        ),
+                                    ))
+                                })
+                        } else {
+                            None
+                        }?;
+                        let align = value.align.low;
+                        let max_size = (1i128 << (tcx.data_layout.pointer_size.bits() - 1)) - 1;
+                        if !value.size.is_empty()
+                            && value.size.low >= 0
+                            && align > 0
+                            && align == value.align.high
+                            && (align as u128).is_power_of_two()
+                            && align <= max_size + 1
+                            && value.size.high <= max_size - (align - 1)
+                        {
+                            return Some(value);
+                        }
+                    }
+                }
+                None
+            })
+            .unwrap_or_else(LayoutValue::top);
         state.set_layout_resolved(symbolic, *destination, layout);
     }
 
@@ -341,7 +426,40 @@ pub fn transfer_terminator<'tcx>(
     }
 
     if !is_allocation_pointer(tcx, destination_ty) {
+        if !is_layout_ty(tcx, destination_ty) && !is_layout_result_ty(tcx, destination_ty) {
+            state.forget_call_result(symbolic, *destination);
+        }
         return;
+    }
+
+    if let Some(view) = mirsa_framework::call_model::PointerView::classify(tcx, func, local_decls) {
+        let value = args
+            .first()
+            .and_then(|arg| view.source(tcx, local_decls, &arg.node))
+            .map(|source| {
+                eval_pointer_operand(tcx, symbolic, state, &source, local_decls, destination_ty)
+            })
+            .unwrap_or_else(PointerValue::top);
+        state.set_pointer_resolved(symbolic, *destination, value);
+        return;
+    }
+
+    if let Some(offset) =
+        mirsa_framework::call_model::PointerOffset::classify(tcx, func, local_decls)
+    {
+        if let (Some(base), Some(count)) = (args.first(), args.get(1)) {
+            let base = eval_pointer_operand(
+                tcx,
+                symbolic,
+                state,
+                &base.node,
+                local_decls,
+                destination_ty,
+            );
+            let value = offset_pointer(state, &base, offset, integer_value(&count.node));
+            state.set_pointer_resolved(symbolic, *destination, value);
+            return;
+        }
     }
 
     let value = pointer_call_value(
@@ -355,6 +473,33 @@ pub fn transfer_terminator<'tcx>(
         &mut integer_value,
     );
     state.set_pointer_resolved(symbolic, *destination, value);
+}
+
+pub fn offset_pointer(
+    state: &AllocationState<'_>,
+    base: &PointerValue,
+    offset: mirsa_framework::call_model::PointerOffset,
+    count: Interval,
+) -> PointerValue {
+    let mut delta = mul(
+        &count,
+        &Interval::new(offset.bytes as i128, offset.bytes as i128),
+    );
+    if offset.subtract {
+        delta = neg(&delta);
+    }
+    if delta.low == 0 && delta.high == 0 {
+        return base.clone();
+    }
+    let result = base.add_offset(delta);
+    if offset.wrapping
+        && state.range_in_allocation(&result, Interval::new(0, 0))
+            != super::abstract_value::AbstractBool::True
+    {
+        PointerValue::top()
+    } else {
+        result
+    }
 }
 
 fn pointer_call_value<'tcx>(
@@ -382,6 +527,13 @@ fn pointer_call_value<'tcx>(
         return PointerValue::top();
     };
     let base_operand = &args[base_index].node;
+    if ["::as_ptr", "::as_mut_ptr", "::as_ref", "::as_mut"]
+        .iter()
+        .any(|suffix| path.ends_with(suffix))
+        && matches!(base_operand.ty(local_decls, tcx).kind(), TyKind::Ref(_, inner, _) if matches!(inner.kind(), TyKind::Adt(..)))
+    {
+        return PointerValue::top();
+    }
     let base = eval_pointer_operand(
         tcx,
         symbolic,
@@ -391,25 +543,20 @@ fn pointer_call_value<'tcx>(
         destination_ty,
     );
 
-    if is_pointer_offset_call(path) {
-        let Some(offset_operand) = args.get(base_index + 1).map(|arg| &arg.node) else {
-            return base.forget_offsets();
+    if (path.starts_with("core::ptr::") || path.starts_with("std::ptr::"))
+        && path.ends_with("::with_addr")
+    {
+        let address = args
+            .get(base_index + 1)
+            .map(|arg| integer_value(&arg.node))
+            .unwrap_or_else(Interval::top);
+        return if address.low == 0 && address.high == 0 {
+            PointerValue::null()
+        } else if address.low > 0 || address.high < 0 {
+            PointerValue::unknown_non_null()
+        } else {
+            PointerValue::top()
         };
-        let mut delta = integer_value(offset_operand);
-        if !is_byte_offset_call(path) {
-            delta = mul(
-                &delta,
-                &pointer_element_size(tcx, base_operand.ty(local_decls, tcx)),
-            );
-        }
-        if is_subtracting_offset_call(path) {
-            delta = neg(&delta);
-        }
-        return base.add_offset(delta);
-    }
-
-    if path.ends_with("::with_addr") || path.ends_with("::map_addr") || path.ends_with("::mask") {
-        return base.forget_offsets();
     }
 
     if path.ends_with("::cast")
@@ -735,7 +882,7 @@ fn pointer_element_size<'tcx>(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> Interval {
         .unwrap_or_else(Interval::top)
 }
 
-fn heap_id<'tcx>(
+pub(super) fn heap_id<'tcx>(
     term: &Terminator<'tcx>,
     symbolic: &SymbolicState<'tcx>,
     state: &AllocationState<'tcx>,
@@ -804,41 +951,6 @@ fn is_deallocate_call(path: &str) -> bool {
 
 fn is_reallocate_call(path: &str) -> bool {
     is_allocator_api(path) && path.ends_with("::realloc")
-}
-
-fn is_pointer_offset_call(path: &str) -> bool {
-    [
-        "::add",
-        "::sub",
-        "::offset",
-        "::wrapping_add",
-        "::wrapping_sub",
-        "::wrapping_offset",
-        "::byte_add",
-        "::byte_sub",
-        "::byte_offset",
-        "::wrapping_byte_add",
-        "::wrapping_byte_sub",
-        "::wrapping_byte_offset",
-    ]
-    .iter()
-    .any(|suffix| path.ends_with(suffix))
-}
-
-fn is_byte_offset_call(path: &str) -> bool {
-    path.ends_with("::byte_add")
-        || path.ends_with("::byte_sub")
-        || path.ends_with("::byte_offset")
-        || path.ends_with("::wrapping_byte_add")
-        || path.ends_with("::wrapping_byte_sub")
-        || path.ends_with("::wrapping_byte_offset")
-}
-
-fn is_subtracting_offset_call(path: &str) -> bool {
-    path.ends_with("::sub")
-        || path.ends_with("::wrapping_sub")
-        || path.ends_with("::byte_sub")
-        || path.ends_with("::wrapping_byte_sub")
 }
 
 fn is_pointer_difference_call(path: &str) -> bool {

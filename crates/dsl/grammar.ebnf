@@ -1,0 +1,47 @@
+Document  ::= Statement
+Statement ::= Request "at" Location
+Request   ::= Expr | "facts" "(" Expr ")"
+Location  ::= "'" Name
+
+Expr      ::= Imply
+Imply     ::= Or [ "=>" Imply ]
+Or        ::= And { "||" And }
+And       ::= Compare { "&&" Compare }
+Compare   ::= BitOr [ CompareOp BitOr ]
+CompareOp ::= "==" | "!=" | "<" | "<=" | ">" | ">="
+BitOr     ::= BitXor { "|" BitXor }
+BitXor    ::= BitAnd { "^" BitAnd }
+BitAnd    ::= Shift { "&" Shift }
+Shift     ::= Add { ("<<" | ">>") Add }
+Add       ::= Mul { ("+" | "-") Mul }
+Mul       ::= Cast { ("*" | "/" | "%") Cast }
+Cast      ::= Unary { "as" ScalarType }
+Unary     ::= ("!" | "-" | "*") Unary | Postfix
+Postfix   ::= Primary { "." Field | "[" Expr "]" }
+Field     ::= Name | Digits
+Primary   ::= "$" Name | Literal | Builtin | "(" Expr ")"
+
+Builtin   ::= ("math" | "len") "(" Expr ")"
+            | ("is_nan" | "is_infinite") "(" Expr ")"
+            | ("is_null" | "is_live" | "is_freed") "(" Expr ")"
+            | "same_allocation" "(" Expr "," Expr ")"
+            | ("base" | "address" | "offset" | "extent") "(" Expr ")"
+            | ("layout_size" | "layout_align") "(" Expr ")"
+            | "discriminant" "(" Expr ")"
+            | ("size_of" | "align_of") "::<" Type ">()"
+
+Type       ::= ScalarType | "$" Name
+ScalarType ::= IntType | FloatType | "bool" | "char"
+IntType    ::= ("i" | "u") ("8" | "16" | "32" | "64" | "128" | "size")
+FloatType  ::= "f32" | "f64"
+
+Literal    ::= Integer | Float | "true" | "false"
+Integer    ::= (Digits | "0x" HexDigits) [ IntType ]
+Float      ::= Digits "." Digits [ Exponent ] FloatType
+Exponent   ::= ("e" | "E") [ "+" | "-" ] Digits
+Name       ::= Letter { Letter | Digit }
+Letter     ::= "a"…"z" | "A"…"Z" | "_"
+Digit      ::= "0"…"9"
+Digits     ::= Digit { Digit }
+HexDigit   ::= Digit | "a"…"f" | "A"…"F"
+HexDigits  ::= HexDigit { HexDigit }

@@ -42,6 +42,19 @@ struct MirCallbacks {
 }
 
 impl Callbacks for MirCallbacks {
+    fn config(&mut self, config: &mut rustc_interface::interface::Config) {
+        config
+            .opts
+            .unstable_opts
+            .mir_enable_passes
+            .retain(|(name, _)| name != "RemoveStorageMarkers");
+        config
+            .opts
+            .unstable_opts
+            .mir_enable_passes
+            .push(("RemoveStorageMarkers".to_owned(), false));
+    }
+
     fn after_analysis(
         &mut self,
         _compiler: &rustc_interface::interface::Compiler,

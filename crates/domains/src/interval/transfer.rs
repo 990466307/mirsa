@@ -1,6 +1,7 @@
 use rustc_middle::mir::*;
 use rustc_middle::ty::{FloatTy, Ty, TyCtxt, TyKind, TypingEnv};
 
+use mirsa_framework::call_model::{PointerView, ViewLength};
 use mirsa_relations::symbolic::SymbolicState;
 
 use super::abstract_value::*;
@@ -34,6 +35,34 @@ fn scalar_layout<'tcx>(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> Option<(u64, bool)> {
         TyKind::Char => Some((32, false)),
         _ => None,
     }
+}
+
+pub fn scalar_value_place<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    place: Place<'tcx>,
+    ty: Ty<'tcx>,
+) -> Option<Place<'tcx>> {
+    let ty = tcx
+        .try_normalize_erasing_regions(TypingEnv::fully_monomorphized(), ty)
+        .ok()?;
+    if scalar_layout(tcx, ty).is_some() {
+        return Some(place);
+    }
+    let TyKind::Adt(adt, args) = ty.kind() else {
+        return None;
+    };
+    if adt.variants().len() != 1 || adt.non_enum_variant().fields.len() != 1 {
+        return None;
+    }
+    let field = &adt.non_enum_variant().fields[0usize.into()];
+    let field_ty = tcx
+        .try_normalize_erasing_regions(TypingEnv::fully_monomorphized(), field.ty(tcx, args))
+        .ok()?;
+    scalar_value_place(
+        tcx,
+        place.project_deeper(&[ProjectionElem::Field(0usize.into(), field_ty)], tcx),
+        field_ty,
+    )
 }
 
 fn is_scalar_interval_ty<'tcx>(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> bool {
@@ -119,6 +148,9 @@ fn bits_to_i128(bits: u128, bit_width: u64, signed: bool) -> i128 {
 
 pub fn switch_value_to_i128<'tcx>(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>, value: u128) -> Option<i128> {
     let (bit_width, signed) = scalar_layout(tcx, ty)?;
+    if !signed && bit_width == 128 && value > i128::MAX as u128 {
+        return None;
+    }
     Some(bits_to_i128(value, bit_width, signed))
 }
 
@@ -334,7 +366,7 @@ fn cast_u128_to_float(kind: FloatKind, value: u128) -> f64 {
 }
 
 // 将 MIR 常量操作数求值为区间值。
-pub fn interval_of_const<'tcx>(c: &ConstOperand<'tcx>) -> Interval {
+pub fn interval_of_const<'tcx>(tcx: TyCtxt<'tcx>, c: &ConstOperand<'tcx>) -> Interval {
     let ty = c.ty();
     let signed = match ty.kind() {
         TyKind::Int(_) => true,
@@ -347,11 +379,14 @@ pub fn interval_of_const<'tcx>(c: &ConstOperand<'tcx>) -> Interval {
         _ => 0,
     };
     let k = c.const_;
-    if let Some(si) = k.try_to_scalar_int() {
+    if let Some(si) = k.try_eval_scalar_int(tcx, TypingEnv::fully_monomorphized()) {
         let bit_width = match ty.kind() {
             TyKind::Int(_) | TyKind::Uint(_) => si.size().bits(),
             _ => bit_width_from_ty,
         };
+        if !signed && bit_width == 128 && si.to_bits_unchecked() > i128::MAX as u128 {
+            return Interval::top();
+        }
         let v = bits_to_i128(si.to_bits_unchecked(), bit_width, signed);
         Interval::new(v, v)
     } else {
@@ -359,11 +394,14 @@ pub fn interval_of_const<'tcx>(c: &ConstOperand<'tcx>) -> Interval {
     }
 }
 
-pub fn float_interval_of_const<'tcx>(c: &ConstOperand<'tcx>) -> FloatInterval {
+pub fn float_interval_of_const<'tcx>(tcx: TyCtxt<'tcx>, c: &ConstOperand<'tcx>) -> FloatInterval {
     let Some(kind) = float_kind_for_ty(c.ty()) else {
         return FloatInterval::top();
     };
-    let Some(scalar) = c.const_.try_to_scalar_int() else {
+    let Some(scalar) = c
+        .const_
+        .try_eval_scalar_int(tcx, TypingEnv::fully_monomorphized())
+    else {
         return FloatInterval::top();
     };
     let bits = scalar.to_bits_unchecked();
@@ -455,7 +493,12 @@ pub fn operand_len<'tcx>(
 pub fn operand_known_len<'tcx>(st: &IntervalState<'tcx>, op: &Operand<'tcx>) -> Option<Interval> {
     match op {
         Operand::Copy(place) | Operand::Move(place) => st.get_len(place),
-        Operand::Constant(_) => None,
+        Operand::Constant(c) => match c.const_ {
+            Const::Val(ConstValue::Slice { meta, .. }, _) => {
+                Some(Interval::new(meta as i128, meta as i128))
+            }
+            _ => None,
+        },
     }
 }
 
@@ -532,12 +575,43 @@ fn rvalue_len<'tcx>(
     tcx: TyCtxt<'tcx>,
     local_decls: &LocalDecls<'tcx>,
     st: &IntervalState<'tcx>,
+    symbolic: &SymbolicState<'tcx>,
     rvalue: &Rvalue<'tcx>,
 ) -> Option<Interval> {
     match rvalue {
-        Rvalue::Use(op) | Rvalue::Cast(_, op, _) => operand_known_len(st, op),
+        Rvalue::Use(op) | Rvalue::Cast(_, op, _) => {
+            let static_length = match rvalue {
+                Rvalue::Cast(CastKind::PointerCoercion(_, _), _, _) => {
+                    static_len(tcx, op.ty(local_decls, tcx))
+                }
+                _ => None,
+            };
+            static_length
+                .or_else(|| {
+                    operand_place(op).and_then(|place| st.tracked_len_resolved(symbolic, place))
+                })
+                .or_else(|| operand_known_len(st, op))
+        }
         Rvalue::Ref(_, _, place) | Rvalue::RawPtr(_, place) => {
-            place_object_len(tcx, local_decls, st, *place)
+            if let Some(len) = static_len(tcx, place.ty(local_decls, tcx).ty) {
+                return Some(len);
+            }
+            if matches!(
+                place.ty(local_decls, tcx).ty.kind(),
+                TyKind::Slice(_) | TyKind::Str
+            ) {
+                if let Some((ProjectionElem::Deref, prefix)) = place.projection.split_last() {
+                    let pointer = Place::from(place.local).project_deeper(prefix, tcx);
+                    return st.tracked_len_resolved(symbolic, pointer);
+                }
+            }
+            if let Some(len) = st
+                .tracked_len_resolved(symbolic, *place)
+                .filter(|len| !len.is_empty())
+            {
+                return Some(len);
+            }
+            None
         }
         _ => None,
     }
@@ -546,17 +620,60 @@ fn rvalue_len<'tcx>(
 fn call_len<'tcx>(
     tcx: TyCtxt<'tcx>,
     local_decls: &LocalDecls<'tcx>,
-    st: &IntervalState<'tcx>,
+    st: &mut IntervalState<'tcx>,
+    symbolic: &SymbolicState<'tcx>,
     term: &Terminator<'tcx>,
     path: &str,
     ptr_offset: Option<Interval>,
 ) -> Option<Interval> {
     let TerminatorKind::Call {
-        args, destination, ..
+        args,
+        destination,
+        func,
+        ..
     } = &term.kind
     else {
         return None;
     };
+
+    if let Some(view) = PointerView::classify(tcx, func, local_decls) {
+        return match view.length {
+            ViewLength::Argument(index) => args
+                .get(index)
+                .map(|arg| eval_operand(tcx, local_decls, &arg.node, symbolic, st)),
+            ViewLength::One => Some(Interval::new(1, 1)),
+            ViewLength::Unknown => None,
+            ViewLength::Preserve => {
+                let source = view.source(tcx, local_decls, &args.first()?.node)?;
+                static_len(tcx, source.ty(local_decls, tcx))
+                    .or_else(|| {
+                        source
+                            .place()
+                            .and_then(|place| st.tracked_len_resolved(symbolic, place))
+                    })
+                    .or_else(|| operand_known_len(st, &source))
+            }
+        };
+    }
+
+    let standard = matches!(func.ty(local_decls, tcx).kind(), TyKind::FnDef(callee, _)
+        if !callee.is_local() && matches!(tcx.crate_name(callee.krate).as_str(), "core" | "alloc" | "std"));
+    if standard
+        && [
+            "::as_bytes",
+            "::as_bytes_mut",
+            "::as_str",
+            "::as_mut_str",
+            "::from_utf8_unchecked",
+            "::from_utf8_unchecked_mut",
+        ]
+        .iter()
+        .any(|suffix| path.ends_with(suffix))
+    {
+        return args
+            .first()
+            .and_then(|arg| operand_known_len(st, &arg.node));
+    }
 
     if path.ends_with("::as_ptr") || path.ends_with("::as_mut_ptr") {
         return args
@@ -651,7 +768,7 @@ pub fn eval_operand<'tcx>(
     }
     match op {
         Operand::Copy(p) | Operand::Move(p) => eval_place(symbolic, *p, st),
-        Operand::Constant(c) => interval_of_const(c),
+        Operand::Constant(c) => interval_of_const(tcx, c),
     }
 }
 
@@ -667,7 +784,31 @@ pub fn eval_float_operand<'tcx>(
     }
     match op {
         Operand::Copy(place) | Operand::Move(place) => eval_float_place(symbolic, *place, st),
-        Operand::Constant(c) => float_interval_of_const(c),
+        Operand::Constant(c) => float_interval_of_const(tcx, c),
+    }
+}
+
+pub fn eval_checked_binary_interval<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    st: &mut IntervalState<'tcx>,
+    symbolic: &SymbolicState<'tcx>,
+    local_decls: &LocalDecls<'tcx>,
+    op: &BinOp,
+    a: &Operand<'tcx>,
+    b: &Operand<'tcx>,
+) -> (Interval, Interval) {
+    let sa = eval_operand(tcx, local_decls, a, symbolic, st);
+    let sb = eval_operand(tcx, local_decls, b, symbolic, st);
+
+    let operand_ty = a.ty(local_decls, tcx);
+    if matches!(op, BinOp::SubWithOverflow)
+        && same_integer_operand(tcx, local_decls, symbolic, a, b)
+    {
+        (Interval::new(0, 0), Interval::new(0, 0))
+    } else if let Some((bits, signed)) = scalar_layout(tcx, operand_ty) {
+        super::integer_arithmetic::arithmetic(*op, sa, sb, bits, signed)
+    } else {
+        (Interval::top(), Interval::new(0, 1))
     }
 }
 
@@ -682,30 +823,39 @@ fn eval_binary_op_with_overflow_interval<'tcx>(
     ops: &Box<(Operand<'tcx>, Operand<'tcx>)>,
 ) {
     let (a, b) = &**ops;
-    let sa = eval_operand(tcx, local_decls, a, symbolic, st);
-    let sb = eval_operand(tcx, local_decls, b, symbolic, st);
-
-    let result_sign = match op {
-        BinOp::AddWithOverflow => add(&sa, &sb),
-        BinOp::SubWithOverflow => sub(&sa, &sb),
-        BinOp::MulWithOverflow => mul(&sa, &sb),
-        _ => unreachable!(),
-    };
-
-    let operand_ty = match a {
-        Operand::Copy(place) | Operand::Move(place) => place.ty(local_decls, tcx).ty,
-        Operand::Constant(const_) => const_.ty(),
-    };
+    let operand_ty = a.ty(local_decls, tcx);
+    let (result_sign, overflow) =
+        eval_checked_binary_interval(tcx, st, symbolic, local_decls, op, a, b);
 
     let result_place = place.project_deeper(&[ProjectionElem::Field(0u32.into(), operand_ty)], tcx);
     st.set_interval_resolved(symbolic, result_place, result_sign);
 
     let overflow_place =
         place.project_deeper(&[ProjectionElem::Field(1u32.into(), tcx.types.bool)], tcx);
-    st.set_interval_resolved(symbolic, overflow_place, Interval::new(0, 0));
+    st.set_interval_resolved(symbolic, overflow_place, overflow);
 }
 
 // 在区间域中计算二元运算。
+fn same_integer_operand<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    local_decls: &LocalDecls<'tcx>,
+    symbolic: &SymbolicState<'tcx>,
+    a: &Operand<'tcx>,
+    b: &Operand<'tcx>,
+) -> bool {
+    if !matches!(
+        a.ty(local_decls, tcx).kind(),
+        TyKind::Int(_) | TyKind::Uint(_)
+    ) || a.ty(local_decls, tcx) != b.ty(local_decls, tcx)
+    {
+        return false;
+    }
+    match (a.place(), b.place()) {
+        (Some(a), Some(b)) => symbolic.equiv_places_readonly(a, b),
+        _ => false,
+    }
+}
+
 fn eval_binary_op_interval<'tcx>(
     tcx: TyCtxt<'tcx>,
     st: &mut IntervalState<'tcx>,
@@ -743,14 +893,28 @@ fn eval_binary_op_interval<'tcx>(
         return Interval::new(0, 1);
     }
 
+    if is_comparison {
+        if let Some(value) = symbolic.compare(tcx, local_decls, *op, a, b) {
+            return Interval::new(i128::from(value), i128::from(value));
+        }
+    }
+
     let sa = eval_operand(tcx, local_decls, a, symbolic, st);
     let sb = eval_operand(tcx, local_decls, b, symbolic, st);
 
+    if matches!(op, BinOp::Sub) && same_integer_operand(tcx, local_decls, symbolic, a, b) {
+        return Interval::new(0, 0);
+    }
+    if matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul) {
+        return scalar_layout(tcx, a.ty(local_decls, tcx))
+            .map(|(bits, signed)| {
+                super::integer_arithmetic::arithmetic(*op, sa, sb, bits, signed).0
+            })
+            .unwrap_or_else(Interval::top);
+    }
     match op {
-        BinOp::Add => add(&sa, &sb),
-        BinOp::Sub => sub(&sa, &sb),
-        BinOp::Mul => mul(&sa, &sb),
         BinOp::Div => div(&sa, &sb),
+        BinOp::Rem => rem(&sa, &sb),
         BinOp::BitAnd => bitand(&sa, &sb),
         BinOp::BitOr => bitor(&sa, &sb),
         BinOp::BitXor => bitxor(&sa, &sb),
@@ -799,7 +963,18 @@ fn eval_unary_op_interval<'tcx>(
     let sa = eval_operand(tcx, local_decls, arg, symbolic, st);
 
     match op {
-        UnOp::Neg => neg(&sa),
+        UnOp::Neg => scalar_layout(tcx, arg.ty(local_decls, tcx))
+            .map(|(bits, signed)| {
+                super::integer_arithmetic::arithmetic(
+                    BinOp::Sub,
+                    Interval::new(0, 0),
+                    sa,
+                    bits,
+                    signed,
+                )
+                .0
+            })
+            .unwrap_or_else(Interval::top),
         _ => Interval::top(),
     }
 }
@@ -827,6 +1002,17 @@ pub fn eval_assign_rhs_interval<'tcx>(
     rvalue: &Rvalue<'tcx>,
 ) -> Interval {
     match rvalue {
+        Rvalue::NullaryOp(op @ (NullOp::SizeOf | NullOp::AlignOf), ty) => tcx
+            .layout_of(TypingEnv::fully_monomorphized().as_query_input(*ty))
+            .ok()
+            .map(|layout| {
+                let bytes = match op {
+                    NullOp::SizeOf => layout.size.bytes(),
+                    _ => layout.align.abi.bytes(),
+                } as i128;
+                Interval::new(bytes, bytes)
+            })
+            .unwrap_or_else(Interval::top),
         Rvalue::BinaryOp(op, ops) => match op {
             BinOp::AddWithOverflow | BinOp::SubWithOverflow | BinOp::MulWithOverflow => {
                 Interval::top()
@@ -882,6 +1068,57 @@ pub fn eval_assign_rhs_float<'tcx>(
 }
 
 // 对单条 MIR 语句执行区间与等价关系的 transfer。
+fn assign_operand_value<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    symbolic: &SymbolicState<'tcx>,
+    st: &mut IntervalState<'tcx>,
+    source: &IntervalState<'tcx>,
+    local_decls: &LocalDecls<'tcx>,
+    destination: Place<'tcx>,
+    operand: &Operand<'tcx>,
+) {
+    let mut values = source.clone();
+    if place_is_scalar_interval(tcx, local_decls, destination) {
+        let bits = match operand {
+            Operand::Constant(c) => c
+                .const_
+                .try_eval_scalar_int(tcx, TypingEnv::fully_monomorphized()),
+            Operand::Copy(place) | Operand::Move(place) => {
+                source.integer_bits_resolved(symbolic, *place)
+            }
+        };
+        if let Some(bits) = bits {
+            st.set_integer_bits_resolved(symbolic, destination, bits);
+        }
+    }
+    if place_is_scalar_interval(tcx, local_decls, destination) {
+        let value = eval_operand(tcx, local_decls, operand, symbolic, &mut values);
+        st.set_interval_resolved(symbolic, destination, value);
+    }
+    if place_is_float_interval(tcx, local_decls, destination) {
+        let value = eval_float_operand(tcx, local_decls, operand, symbolic, &mut values);
+        st.set_float_interval_resolved(symbolic, destination, value);
+    }
+    if let Some(source_place) = operand_place(operand) {
+        if let Some(variant) = source.enum_variant_resolved(symbolic, source_place) {
+            st.set_enum_variant_resolved(symbolic, destination, variant);
+        }
+        if let (Some(destination), Some(origin)) = (
+            symbolic.normalize_place(destination),
+            symbolic.normalize_place(source_place),
+        ) {
+            st.copy_children_from(source, &destination, &origin);
+        }
+    }
+    st.clear_len_resolved(symbolic, &destination);
+    if let Some(len) = operand_known_len(source, operand) {
+        st.set_len_resolved(symbolic, destination, len);
+    }
+    if let Operand::Constant(constant) = operand {
+        super::constant_bytes::assign(tcx, symbolic, st, destination, constant);
+    }
+}
+
 pub fn transfer_stmt<'tcx>(
     tcx: TyCtxt<'tcx>,
     symbolic: &SymbolicState<'tcx>,
@@ -893,6 +1130,10 @@ pub fn transfer_stmt<'tcx>(
     match kind {
         StatementKind::Assign(assign) => {
             let (place, rvalue) = &**assign;
+            let source_state = st.clone();
+            if let Some(path) = symbolic.normalize_place(*place) {
+                st.invalidate_value_facts(symbolic, &[path]);
+            }
             st.debug(format_args!("stmt assign {:?} = {:?}", place, rvalue));
             if let Rvalue::Use(op) = rvalue {
                 if operand_place(op).is_some_and(has_runtime_index)
@@ -907,11 +1148,18 @@ pub fn transfer_stmt<'tcx>(
                 return;
             }
             let dst_place = *place;
-            let rhs_len = rvalue_len(tcx, local_decls, st, rvalue);
+            if let Some(path) = symbolic.normalize_place(dst_place) {
+                st.invalidate_children(&path);
+            }
+            let rhs_len = rvalue_len(tcx, local_decls, st, symbolic, rvalue);
             st.clear_len_resolved(symbolic, &dst_place);
             let tracks_interval_value = place_is_scalar_interval(tcx, local_decls, dst_place);
             let tracks_float_value = place_is_float_interval(tcx, local_decls, dst_place);
             match rvalue {
+                Rvalue::NullaryOp(NullOp::SizeOf | NullOp::AlignOf, _) => {
+                    let value = eval_assign_rhs_interval(tcx, st, symbolic, local_decls, rvalue);
+                    st.set_interval_resolved(symbolic, dst_place, value);
+                }
                 Rvalue::BinaryOp(op, ops) => match op {
                     BinOp::AddWithOverflow | BinOp::SubWithOverflow | BinOp::MulWithOverflow => {
                         eval_binary_op_with_overflow_interval(
@@ -964,17 +1212,18 @@ pub fn transfer_stmt<'tcx>(
                 }
 
                 Rvalue::Use(op) => {
-                    if tracks_interval_value {
-                        let rhs_interval = eval_operand(tcx, local_decls, op, symbolic, st);
-                        st.set_interval_resolved(symbolic, dst_place, rhs_interval);
-                    }
-                    if tracks_float_value {
-                        let rhs_interval = eval_float_operand(tcx, local_decls, op, symbolic, st);
-                        st.set_float_interval_resolved(symbolic, dst_place, rhs_interval);
-                    }
+                    assign_operand_value(
+                        tcx,
+                        symbolic,
+                        st,
+                        &source_state,
+                        local_decls,
+                        dst_place,
+                        op,
+                    );
                 }
 
-                Rvalue::Cast(cast_kind, op, dst_ty) => {
+                Rvalue::Cast(_, op, dst_ty) => {
                     if tracks_interval_value {
                         let rhs_interval =
                             eval_cast_interval(tcx, st, local_decls, op, symbolic, *dst_ty);
@@ -984,22 +1233,6 @@ pub fn transfer_stmt<'tcx>(
                         let rhs_interval =
                             eval_cast_float(tcx, st, local_decls, op, symbolic, *dst_ty);
                         st.set_float_interval_resolved(symbolic, dst_place, rhs_interval);
-                    }
-                    if matches!(cast_kind, CastKind::PointerCoercion(_, _)) {
-                        if let Operand::Copy(src) | Operand::Move(src) = op {
-                            let src_ty = src.ty(local_decls, tcx).ty;
-                            if let TyKind::Ref(_, inner, _) = src_ty.kind() {
-                                if let TyKind::Array(_, len) = inner.kind() {
-                                    if let Some(len) = len.try_to_target_usize(tcx) {
-                                        st.set_len_resolved(
-                                            symbolic,
-                                            dst_place,
-                                            Interval::new(len as i128, len as i128),
-                                        );
-                                    }
-                                }
-                            }
-                        }
                     }
                 }
 
@@ -1025,28 +1258,42 @@ pub fn transfer_stmt<'tcx>(
                 }
 
                 Rvalue::Aggregate(kind, indexvec) => match kind.as_ref() {
-                    AggregateKind::Tuple => {
+                    AggregateKind::Tuple | AggregateKind::Adt(..) => {
+                        if let AggregateKind::Adt(def_id, variant, ..) = kind.as_ref() {
+                            if tcx.adt_def(*def_id).is_enum() {
+                                st.set_enum_variant_resolved(symbolic, dst_place, variant.index());
+                            }
+                        }
+                        let base = match kind.as_ref() {
+                            AggregateKind::Adt(def_id, variant, ..)
+                                if tcx.adt_def(*def_id).is_enum() =>
+                            {
+                                dst_place.project_deeper(
+                                    &[ProjectionElem::Downcast(None, *variant)],
+                                    tcx,
+                                )
+                            }
+                            _ => dst_place,
+                        };
                         for (i, op) in indexvec.iter().enumerate() {
-                            let elem_place = dst_place.project_deeper(
+                            let elem_place = base.project_deeper(
                                 &[ProjectionElem::Field(i.into(), op.ty(local_decls, tcx))],
                                 tcx,
                             );
-                            let elem_interval = eval_operand(tcx, local_decls, op, symbolic, st);
-                            if place_is_scalar_interval(tcx, local_decls, elem_place) {
-                                st.set_interval_resolved(symbolic, elem_place, elem_interval);
-                            }
-                            if place_is_float_interval(tcx, local_decls, elem_place) {
-                                let elem_interval =
-                                    eval_float_operand(tcx, local_decls, op, symbolic, st);
-                                st.set_float_interval_resolved(symbolic, elem_place, elem_interval);
-                            }
-                            st.clear_len_resolved(symbolic, &elem_place);
-                            if let Some(len) = operand_known_len(st, op) {
-                                st.set_len_resolved(symbolic, elem_place, len);
-                            }
+                            assign_operand_value(
+                                tcx,
+                                symbolic,
+                                st,
+                                &source_state,
+                                local_decls,
+                                elem_place,
+                                op,
+                            );
                         }
                     }
+
                     AggregateKind::Array(_elem_ty) => {
+                        st.clear_index_summaries(symbolic, dst_place);
                         let len = indexvec.len() as u64;
                         for (i, op) in indexvec.iter().enumerate() {
                             let elem_place = dst_place.project_deeper(
@@ -1118,6 +1365,41 @@ pub fn transfer_stmt<'tcx>(
             if let Some(len) = rhs_len {
                 st.set_len_resolved(symbolic, dst_place, len);
             }
+            if let Rvalue::BinaryOp(BinOp::Shl | BinOp::Shr, operands) = rvalue {
+                let get_bits = |operand: &Operand<'tcx>| match operand {
+                    Operand::Constant(c) => c
+                        .const_
+                        .try_eval_scalar_int(tcx, TypingEnv::fully_monomorphized()),
+                    Operand::Copy(p) | Operand::Move(p) => {
+                        source_state.integer_bits_resolved(symbolic, *p)
+                    }
+                };
+                if let (Some(left), Some(right), Some((width, signed))) = (
+                    get_bits(&operands.0),
+                    get_bits(&operands.1),
+                    scalar_layout(tcx, dst_place.ty(local_decls, tcx).ty),
+                ) {
+                    let shift = right.to_bits_unchecked();
+                    if shift < width as u128 {
+                        let bits = if matches!(rvalue, Rvalue::BinaryOp(BinOp::Shl, _)) {
+                            left.to_bits_unchecked() << shift
+                        } else if signed {
+                            (left.to_int(left.size()) >> shift) as u128
+                        } else {
+                            left.to_bits_unchecked() >> shift
+                        };
+                        let value =
+                            rustc_middle::ty::ScalarInt::truncate_from_uint(bits, left.size()).0;
+                        st.set_integer_bits_resolved(symbolic, dst_place, value);
+                    }
+                }
+            }
+        }
+        StatementKind::SetDiscriminant {
+            place,
+            variant_index,
+        } => {
+            st.set_enum_variant_resolved(symbolic, **place, variant_index.index());
         }
         _ => {}
     }
@@ -1136,6 +1418,9 @@ pub fn transfer_terminator<'tcx>(
     else {
         return;
     };
+    if let Some(path) = symbolic.normalize_place(*destination) {
+        st.invalidate_paths(symbolic, &[path]);
+    }
     st.clear_len_resolved(symbolic, destination);
     if place_is_scalar_interval(tcx, local_decls, *destination) {
         st.set_interval_resolved(symbolic, *destination, Interval::top());
@@ -1147,6 +1432,141 @@ pub fn transfer_terminator<'tcx>(
         return;
     };
     st.debug(format_args!("call {:?} := {path}", destination));
+    if let TerminatorKind::Call { func, .. } = &term.kind {
+        if let TyKind::FnDef(callee, _) = func.ty(local_decls, tcx).kind() {
+            let standard = matches!(
+                tcx.crate_name(callee.krate).as_str(),
+                "core" | "alloc" | "std"
+            ) && !callee.is_local();
+            let name = tcx.item_name(*callee);
+            if standard {
+                if name.as_str() == "from" && args.len() == 1 {
+                    if let Some(input) = operand_place(&args[0].node) {
+                        if let (TyKind::Adt(src_adt, src_args), TyKind::Adt(dst_adt, dst_args)) = (
+                            input.ty(local_decls, tcx).ty.kind(),
+                            destination.ty(local_decls, tcx).ty.kind(),
+                        ) {
+                            let kind = tcx.item_name(src_adt.did());
+                            let standard_source = !src_adt.did().is_local()
+                                && tcx.crate_name(src_adt.did().krate).as_str() == "core";
+                            let standard_target = !dst_adt.did().is_local()
+                                && tcx.crate_name(dst_adt.did().krate).as_str() == "core";
+                            if standard_source
+                                && standard_target
+                                && tcx.item_name(dst_adt.did()) == kind
+                                && matches!(kind.as_str(), "Range" | "RangeFrom" | "RangeInclusive")
+                            {
+                                let source = st.clone();
+                                let active = src_adt
+                                    .non_enum_variant()
+                                    .fields
+                                    .iter_enumerated()
+                                    .find(|(_, field)| field.name.as_str() == "exhausted")
+                                    .is_none_or(|(index, field)| {
+                                        let field = input.project_deeper(
+                                            &[ProjectionElem::Field(
+                                                index,
+                                                field.ty(tcx, src_args),
+                                            )],
+                                            tcx,
+                                        );
+                                        source.tracked_interval_resolved(symbolic, &field)
+                                            == Some(Interval::new(0, 0))
+                                    });
+                                if active {
+                                    for (index, field) in
+                                        dst_adt.non_enum_variant().fields.iter_enumerated()
+                                    {
+                                        let output = destination.project_deeper(
+                                            &[ProjectionElem::Field(
+                                                index,
+                                                field.ty(tcx, dst_args),
+                                            )],
+                                            tcx,
+                                        );
+                                        if field.name.as_str() == "exhausted" {
+                                            st.set_interval_resolved(
+                                                symbolic,
+                                                output,
+                                                Interval::new(0, 0),
+                                            );
+                                        } else if let Some((input_index, input_field)) = src_adt
+                                            .non_enum_variant()
+                                            .fields
+                                            .iter_enumerated()
+                                            .find(|(_, f)| f.name == field.name)
+                                        {
+                                            let input = input.project_deeper(
+                                                &[ProjectionElem::Field(
+                                                    input_index,
+                                                    input_field.ty(tcx, src_args),
+                                                )],
+                                                tcx,
+                                            );
+                                            assign_operand_value(
+                                                tcx,
+                                                symbolic,
+                                                st,
+                                                &source,
+                                                local_decls,
+                                                output,
+                                                &Operand::Copy(input),
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if name.as_str() == "len"
+                    && args.len() == 1
+                    && destination.ty(local_decls, tcx).ty == tcx.types.usize
+                {
+                    if let Some(receiver) = operand_place(&args[0].node) {
+                        let len = st.read_len_resolved_or_top(symbolic, receiver);
+                        st.set_interval_resolved(symbolic, *destination, len);
+                    }
+                }
+                if name.as_str() == "new" && args.len() == 2 {
+                    if let TyKind::Adt(adt, generics) = destination.ty(local_decls, tcx).ty.kind() {
+                        if tcx.item_name(adt.did()).as_str() == "RangeInclusive"
+                            && tcx.impl_of_method(*callee).is_some_and(|id| matches!(tcx.type_of(id).instantiate_identity().kind(), TyKind::Adt(owner, _) if owner.did() == adt.did())) {
+                            let source = st.clone();
+                            for (index, field) in adt.non_enum_variant().fields.iter_enumerated() {
+                                let ty = field.ty(tcx, generics);
+                                let place = destination.project_deeper(&[ProjectionElem::Field(index, ty)], tcx);
+                                match field.name.as_str() {
+                                    "start" => assign_operand_value(tcx, symbolic, st, &source, local_decls, place, &args[0].node),
+                                    "end" => assign_operand_value(tcx, symbolic, st, &source, local_decls, place, &args[1].node),
+                                    "exhausted" => st.set_interval_resolved(symbolic, place, Interval::new(0, 0)),
+                                    _ => {},
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if let TerminatorKind::Call { func, .. } = &term.kind {
+        if let TyKind::FnDef(callee, _) = func.ty(local_decls, tcx).kind() {
+            if let TyKind::Adt(adt, _) = destination.ty(local_decls, tcx).ty.kind() {
+                let is_nonzero = tcx.get_diagnostic_item(rustc_span::Symbol::intern("NonZero"))
+                    == Some(adt.did());
+                if is_nonzero && tcx.item_name(*callee).as_str() == "new_unchecked"
+                    && tcx.impl_of_method(*callee).is_some_and(|id| matches!(tcx.type_of(id).instantiate_identity().kind(), TyKind::Adt(owner, _) if owner.did() == adt.did()))
+                {
+                    if let (Some(field), Some(arg)) = (scalar_value_place(tcx, *destination, destination.ty(local_decls, tcx).ty), args.first()) {
+                        let source = st.clone();
+                        assign_operand_value(tcx, symbolic, st, &source, local_decls, field, &arg.node);
+                    }
+                }
+            }
+        }
+    }
+
     let ptr_offset = if (path.ends_with("::add")
         || path.ends_with("::wrapping_add")
         || path.ends_with("::offset"))
@@ -1156,7 +1576,7 @@ pub fn transfer_terminator<'tcx>(
     } else {
         None
     };
-    if let Some(len) = call_len(tcx, local_decls, st, term, &path, ptr_offset) {
+    if let Some(len) = call_len(tcx, local_decls, st, symbolic, term, &path, ptr_offset) {
         st.set_len_resolved(symbolic, *destination, len);
     }
     if let Some(value) = call_interval(tcx, local_decls, term, &path) {

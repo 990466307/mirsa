@@ -128,3 +128,14 @@ pub fn load_domain_engine_config(domain: &str) -> EngineConfig {
 
     cfg
 }
+
+pub fn storage_markers_preserved(tcx: rustc_middle::ty::TyCtxt<'_>) -> bool {
+    tcx.sess
+        .opts
+        .unstable_opts
+        .mir_enable_passes
+        .iter()
+        .rev()
+        .find(|(name, _)| name == "RemoveStorageMarkers")
+        .map_or(tcx.sess.mir_opt_level() == 0, |(_, enabled)| !enabled)
+}

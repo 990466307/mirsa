@@ -11,6 +11,7 @@ pub struct AccessPath {
 pub enum AccessPathElem {
     Deref,
     Field(usize),
+    Downcast(usize),
     Index,
     ConstantIndex { offset: u64, from_end: bool },
 }
@@ -25,10 +26,13 @@ impl AccessPath {
 
     pub fn from_projection<'tcx>(
         mut root: AccessPath,
-        projection: &'tcx [ProjectionElem<Local, rustc_middle::ty::Ty<'tcx>>],
+        projection: &[ProjectionElem<Local, rustc_middle::ty::Ty<'tcx>>],
     ) -> Option<Self> {
         for elem in projection {
             match elem {
+                ProjectionElem::Downcast(_, variant) => {
+                    root.push(AccessPathElem::Downcast(variant.index()))
+                }
                 ProjectionElem::Deref => root.push(AccessPathElem::Deref),
                 ProjectionElem::Field(field, _) => {
                     root.push(AccessPathElem::Field(field.as_usize()))
@@ -48,6 +52,19 @@ impl AccessPath {
 
     pub fn from_place<'tcx>(place: Place<'tcx>) -> Option<Self> {
         Self::from_projection(Self::from_local(place.local), place.projection)
+    }
+
+    pub fn for_each_field<'tcx>(
+        &self,
+        tcx: rustc_middle::ty::TyCtxt<'tcx>,
+        ty: rustc_middle::ty::Ty<'tcx>,
+        mut visit: impl FnMut(Self, rustc_middle::ty::Ty<'tcx>),
+    ) {
+        mirsa_core::mir::for_each_field_projection(tcx, ty, |projection, field_ty| {
+            if let Some(field) = Self::from_projection(self.clone(), projection) {
+                visit(field, field_ty);
+            }
+        });
     }
 
     pub fn deref(&self) -> Self {
@@ -74,6 +91,15 @@ impl AccessPath {
         Some(self.elems[prefix.elems.len()..].to_vec())
     }
 
+    /// Fields/elements belong to a value; dereferencing enters a different object.
+    pub fn value_suffix(&self, root: &AccessPath) -> Option<&[AccessPathElem]> {
+        if self.root != root.root || !self.elems.starts_with(&root.elems) {
+            return None;
+        }
+        let suffix = &self.elems[root.elems.len()..];
+        (!suffix.contains(&AccessPathElem::Deref)).then_some(suffix)
+    }
+
     pub fn strip_pattern_prefix(&self, prefix: &AccessPath) -> Option<Vec<AccessPathElem>> {
         if self.root != prefix.root || self.elems.len() < prefix.elems.len() {
             return None;
@@ -94,6 +120,24 @@ impl AccessPath {
                 .iter()
                 .zip(pattern.elems.iter())
                 .all(|(actual, expected)| elem_matches(actual, expected))
+    }
+
+    pub fn matching_patterns(&self) -> Option<Vec<Self>> {
+        let mut paths = vec![self.clone()];
+        for (index, elem) in self.elems.iter().enumerate() {
+            if matches!(elem, AccessPathElem::ConstantIndex { .. }) {
+                if paths.len() >= crate::reduction::MAX_INDEX_PATTERNS {
+                    return None;
+                }
+                let count = paths.len();
+                for i in 0..count {
+                    let mut pattern = paths[i].clone();
+                    pattern.elems[index] = AccessPathElem::Index;
+                    paths.push(pattern);
+                }
+            }
+        }
+        Some(paths)
     }
 
     pub fn has_index(&self) -> bool {
@@ -125,6 +169,7 @@ impl fmt::Display for AccessPath {
         for elem in &self.elems {
             match elem {
                 AccessPathElem::Deref => write!(f, ".*")?,
+                AccessPathElem::Downcast(variant) => write!(f, " as variant#{variant}")?,
                 AccessPathElem::Field(field) => write!(f, ".{field}")?,
                 AccessPathElem::Index => write!(f, "[_]")?,
                 AccessPathElem::ConstantIndex {

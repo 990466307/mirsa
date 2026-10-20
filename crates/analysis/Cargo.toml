@@ -1,17 +1,28 @@
 [package]
 name = "mirsa-analysis"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 description = "Analysis orchestration for mirsa"
 license = "MIT"
 repository = "https://github.com/990466307/mirsa"
 
 [dependencies]
-mirsa_core = { package = "mirsa-core", path = "../core", version = "0.3.0" }
-mirsa_contracts = { package = "mirsa-contracts", path = "../contracts", version = "0.3.0" }
-mirsa_domains = { package = "mirsa-domains", path = "../domains", version = "0.3.0" }
-mirsa_framework = { package = "mirsa-framework", path = "../framework", version = "0.3.0" }
-mirsa_relations = { package = "mirsa-relations", path = "../relations", version = "0.3.0" }
+mirsa_core = { package = "mirsa-core", path = "../core", version = "0.4.0" }
+mirsa_contracts = { package = "mirsa-contracts", path = "../contracts", version = "0.4.0" }
+mirsa_domains = { package = "mirsa-domains", path = "../domains", version = "0.4.0" }
+mirsa_framework = { package = "mirsa-framework", path = "../framework", version = "0.4.0" }
+mirsa_relations = { package = "mirsa-relations", path = "../relations", version = "0.4.0" }
+mirsa_solver = { package = "mirsa-solver", path = "../solver", version = "0.4.0" }
+mirsa_dsl = { package = "mirsa-dsl", path = "../dsl", version = "0.4.0" }
+num-bigint = "0.4"
+num-traits = "0.2"
+serde = { version = "1", features = ["derive"] }
+
+[features]
+z3 = ["mirsa_solver/z3"]
 
 [package.metadata.rust-analyzer]
 rustc_private = true
+
+[dev-dependencies]
+serde_json = "1"

@@ -1,25 +1,58 @@
 use mirsa_framework::forward::DomainState;
 use mirsa_framework::printer::StateEntries;
+use mirsa_framework::revision::{Revision, Versioned};
 use mirsa_relations::symbolic::{SymbolicState, join_display_places};
 use rustc_middle::mir::Place;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fmt;
 
 use super::abstract_value::{NullPtr, join};
-use mirsa_framework::access_path::{AccessPath, AccessPathElem};
+use mirsa_framework::access_path::AccessPath;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NullPtrState<'tcx> {
-    facts: HashMap<AccessPath, NullPtr>,
-    display_places: HashMap<AccessPath, Place<'tcx>>,
+    facts: Versioned<HashMap<AccessPath, NullPtr>>,
+    display_places: Versioned<HashMap<AccessPath, Place<'tcx>>>,
     debug: bool,
 }
 
 impl<'tcx> NullPtrState<'tcx> {
+    /// Export every stored entry for the selected paths; no reduction budget applies.
+    pub fn export_facts<'a>(
+        &'a self,
+        roots: &'a [AccessPath],
+    ) -> impl Iterator<Item = (&'a AccessPath, NullPtr)> {
+        self.facts
+            .iter()
+            .filter(|(p, _)| mirsa_framework::facts::selected(p, roots))
+            .map(|(p, v)| (p, *v))
+    }
+
+    pub fn project(&self, map: &impl mirsa_framework::mapping::PathMapping<'tcx>) -> Self {
+        Self {
+            facts: map.values(&self.facts).into(),
+            display_places: map.places(&self.display_places).into(),
+            debug: self.debug,
+        }
+    }
+
+    pub fn extend(&mut self, other: Self) {
+        self.facts.extend(other.facts);
+        self.display_places.extend(other.display_places);
+    }
+
+    pub fn invalidate_paths(&mut self, symbolic: &SymbolicState<'tcx>, paths: &[AccessPath]) {
+        for (path, value) in &mut self.facts {
+            if symbolic.write_affects(path, paths) {
+                *value = NullPtr::MaybeNull;
+            }
+        }
+    }
+
     fn default(debug: bool) -> Self {
         Self {
-            facts: HashMap::new(),
-            display_places: HashMap::new(),
+            facts: HashMap::new().into(),
+            display_places: HashMap::new().into(),
             debug,
         }
     }
@@ -72,11 +105,11 @@ impl<'tcx> NullPtrState<'tcx> {
     fn lookup(&self, path: &AccessPath) -> Option<NullPtr> {
         let exact = self.facts.get(path).copied();
         let mut value = exact;
-        for (candidate, candidate_value) in &self.facts {
-            if candidate == path {
-                continue;
-            }
-            if path.matches_pattern(candidate) {
+        let Some(patterns) = path.matching_patterns() else {
+            return Some(NullPtr::MaybeNull);
+        };
+        for candidate in patterns.into_iter().skip(1) {
+            if let Some(candidate_value) = self.facts.get(&candidate) {
                 value = Some(join(value.unwrap_or(NullPtr::Bot), *candidate_value));
             }
         }
@@ -142,7 +175,7 @@ impl<'tcx> NullPtrState<'tcx> {
             ));
             return;
         }
-        self.display_places.entry(dst.clone()).or_insert(place);
+        self.display_places.insert_if_absent(dst.clone(), place);
         self.copy_subtree(&dst, src, default, reason);
     }
 
@@ -175,27 +208,10 @@ impl<'tcx> NullPtrState<'tcx> {
         include_root: bool,
     ) {
         self.debug(format_args!("{reason} {dst} <- {src}"));
-        let mut suffixes: HashSet<Vec<AccessPathElem>> = HashSet::new();
-        if include_root {
-            suffixes.insert(Vec::new());
-        }
-        for path in self.facts.keys() {
-            if let Some(suffix) = path.strip_pattern_prefix(dst) {
-                if include_root || !suffix.is_empty() {
-                    suffixes.insert(suffix);
-                }
-            }
-            if let Some(suffix) = path.strip_pattern_prefix(src) {
-                if include_root || !suffix.is_empty() {
-                    suffixes.insert(suffix);
-                }
-            }
-        }
-
         let mut updates = Vec::new();
-        for suffix in suffixes {
-            let dst_path = dst.join_suffix(&suffix);
-            let src_path = src.join_suffix(&suffix);
+        for (dst_path, src_path) in
+            mirsa_framework::mapping::subtree_pairs(dst, src, self.facts.keys(), include_root)
+        {
             let value = match self.value_or_maybe(&src_path) {
                 NullPtr::Bot => default,
                 value => value,
@@ -305,7 +321,7 @@ pub fn join_state<'tcx>(a: &NullPtrState<'tcx>, b: &NullPtrState<'tcx>) -> NullP
         let right_value = b.facts.get(key).copied().unwrap_or(NullPtr::Bot);
         out.facts.insert(key.clone(), join(left_value, right_value));
     }
-    out.display_places = join_display_places(&a.display_places, &b.display_places);
+    out.display_places = join_display_places(&a.display_places, &b.display_places).into();
     out
 }
 
@@ -316,5 +332,11 @@ impl<'tcx> NullPtrState<'tcx> {
                 .iter()
                 .map(|(path, place)| (path.clone(), *place)),
         );
+    }
+}
+
+impl<'tcx> NullPtrState<'tcx> {
+    pub fn revision(&self) -> [Revision; 2] {
+        [self.facts.revision(), self.display_places.revision()]
     }
 }

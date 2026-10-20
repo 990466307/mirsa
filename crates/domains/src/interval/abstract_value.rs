@@ -220,6 +220,31 @@ pub fn div(a: &Interval, b: &Interval) -> Interval {
     Interval::new(min_val, max_val)
 }
 
+/// Rust integer remainder: the result has the dividend's sign and its
+/// magnitude is smaller than the divisor's. Zero divisors have no normal
+/// result; keeping top here leaves panic/reachability handling to MIR guards.
+pub fn rem(a: &Interval, b: &Interval) -> Interval {
+    if a.is_empty() || b.is_empty() {
+        return Interval::empty();
+    }
+    if b.low == 0 && b.high == 0 {
+        return Interval::top();
+    }
+    if a.low == a.high && b.low == b.high {
+        if let Some(value) = a.low.checked_rem(b.low) {
+            return Interval::new(value, value);
+        }
+    }
+    // Extreme endpoints also represent infinity, so do not subtract one
+    // from an unbounded divisor or negate i128::MIN.
+    let bound = if b.low == i128::MIN || b.high == i128::MAX {
+        i128::MAX
+    } else {
+        (b.low.unsigned_abs().max(b.high.unsigned_abs()) - 1) as i128
+    };
+    Interval::new(a.low.min(0).max(-bound), a.high.max(0).min(bound))
+}
+
 pub fn lt(a: &Interval, b: &Interval) -> Interval {
     if a.is_empty() || b.is_empty() {
         return Interval::empty();
@@ -330,7 +355,51 @@ pub fn bitxor(a: &Interval, b: &Interval) -> Interval {
 
 #[cfg(test)]
 mod tests {
-    use super::{Interval, eq, ge, gt, le, lt, neq};
+    use super::{Interval, eq, ge, gt, le, lt, neq, rem};
+
+    #[test]
+    fn remainder_bounds_contain_every_small_integer_result() {
+        for low in -8..=8 {
+            for high in low..=8 {
+                for divisor_low in -8..=8 {
+                    for divisor_high in divisor_low..=8 {
+                        let result = rem(
+                            &Interval::new(low, high),
+                            &Interval::new(divisor_low, divisor_high),
+                        );
+                        for value in low..=high {
+                            for divisor in divisor_low..=divisor_high {
+                                if divisor != 0 {
+                                    let concrete = value % divisor;
+                                    assert!(result.low <= concrete && concrete <= result.high);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn remainder_handles_sign_zero_and_extreme_endpoints() {
+        assert_eq!(
+            rem(&Interval::new(100, 999), &Interval::new(100, 100)),
+            Interval::new(0, 99)
+        );
+        assert_eq!(
+            rem(&Interval::new(-999, -100), &Interval::new(-100, -100)),
+            Interval::new(-99, 0)
+        );
+        assert_eq!(
+            rem(&Interval::top(), &Interval::new(1, 1)),
+            Interval::new(0, 0)
+        );
+        assert_eq!(rem(&Interval::top(), &Interval::new(0, 0)), Interval::top());
+        assert_eq!(rem(&Interval::empty(), &Interval::top()), Interval::empty());
+        let result = rem(&Interval::top(), &Interval::new(i128::MIN, i128::MIN));
+        assert_eq!(result, Interval::new(-i128::MAX, i128::MAX));
+    }
 
     #[test]
     fn comparisons_propagate_empty_intervals() {

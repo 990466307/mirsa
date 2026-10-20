@@ -1,11 +1,10 @@
+use super::refine::refine_nullptr_place;
 use mirsa_domains::nullptr::abstract_value::NullPtr;
-use mirsa_domains::nullptr::constraint::constrain;
 use mirsa_domains::nullptr::state::NullPtrState;
 use mirsa_domains::nullptr::transfer::{const_nullness, get_tracked_value, is_tracked};
-use mirsa_framework::access_path::AccessPath;
 use mirsa_relations::symbolic::{SymbolicExpr, SymbolicFact, SymbolicState};
-use rustc_middle::mir::{BinOp, LocalDecls, Operand, Place};
-use rustc_middle::ty::{Ty, TyCtxt, TyKind};
+use rustc_middle::mir::{BinOp, LocalDecls, Operand};
+use rustc_middle::ty::{TyCtxt, TyKind};
 
 /// Refine nullness facts from a generic branch fact.  API recognition and
 /// nullness lattice operations are deliberately owned by the nullptr domain.
@@ -34,16 +33,27 @@ pub fn reduce_fact<'tcx>(
     let (Operand::Copy(place) | Operand::Move(place)) = expr else {
         return true;
     };
-    let Some(expr) = symbolic.expr_for_place(*place).cloned() else {
+    let Some(expr) = super::expression(symbolic, *place).cloned() else {
         return true;
     };
     match expr {
+        SymbolicExpr::Pointer { .. }
+        | SymbolicExpr::PointerFromAddress { .. }
+        | SymbolicExpr::Value(_)
+        | SymbolicExpr::Address { .. }
+        | SymbolicExpr::Length { .. } => true,
         SymbolicExpr::Cmp { op, left, right } => {
             refine_comparison(tcx, local_decls, state, symbolic, op, truth, &left, &right)
         }
         SymbolicExpr::Call { callee, args } => {
-            let path = tcx.def_path_str(callee);
-            if !(path.ends_with("::is_null") && path.contains("::ptr::")) {
+            let raw_pointer_method = tcx.impl_of_method(callee).is_some_and(|impl_id| {
+                tcx.trait_id_of_impl(impl_id).is_none()
+                    && matches!(
+                        tcx.type_of(impl_id).instantiate_identity().kind(),
+                        TyKind::RawPtr(..)
+                    )
+            });
+            if tcx.item_name(callee).as_str() != "is_null" || !raw_pointer_method {
                 return true;
             }
             args.first()
@@ -137,7 +147,7 @@ fn refine_side<'tcx>(
         (false, NullPtr::Null) => Some(NullPtr::NonNull),
         _ => None,
     };
-    wanted.is_none_or(|wanted| refine_place(state, symbolic, *place, ty, wanted))
+    wanted.is_none_or(|wanted| refine_nullptr_place(state, symbolic, *place, ty, wanted))
 }
 
 fn operand_nullness<'tcx>(
@@ -173,56 +183,5 @@ fn refine_is_null<'tcx>(
     } else {
         NullPtr::NonNull
     };
-    refine_place(state, symbolic, *place, ty, wanted)
-}
-
-fn refine_place<'tcx>(
-    state: &mut NullPtrState<'tcx>,
-    symbolic: &SymbolicState<'tcx>,
-    place: Place<'tcx>,
-    ty: Ty<'tcx>,
-    wanted: NullPtr,
-) -> bool {
-    if !is_tracked(ty) {
-        return true;
-    }
-    let current = get_tracked_value(state, symbolic, place, ty);
-    if current == NullPtr::Bot {
-        return true;
-    }
-    let Some(refined) = constrain(current, wanted) else {
-        return false;
-    };
-    state.debug(format_args!(
-        "reduce {:?}: {:?} ∩ {:?} = {:?}",
-        place, current, wanted, refined
-    ));
-    let Some(path) = state.access_path_for_place_resolved(symbolic, place) else {
-        return true;
-    };
-    refine_equivalent_facts(state, symbolic, path, refined)
-}
-
-fn refine_equivalent_facts<'tcx>(
-    state: &mut NullPtrState<'tcx>,
-    symbolic: &SymbolicState<'tcx>,
-    path: AccessPath,
-    refined: NullPtr,
-) -> bool {
-    state.set_path(path.clone(), refined);
-    let paths: Vec<_> = state.fact_paths().collect();
-    for other in paths {
-        if other == path || !symbolic.eq.equiv_readonly(path.clone(), other.clone()) {
-            continue;
-        }
-        let current = state.value_or_maybe(&other);
-        if current == NullPtr::Bot {
-            continue;
-        }
-        let Some(value) = constrain(current, refined) else {
-            return false;
-        };
-        state.set_path(other, value);
-    }
-    true
+    refine_nullptr_place(state, symbolic, *place, ty, wanted)
 }

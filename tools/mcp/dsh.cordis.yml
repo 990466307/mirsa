@@ -1,0 +1,16 @@
+- insert:
+    - id: mcp-mirsa
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: mirsa
+        transport: stdio
+        command: wsl.exe
+        args:
+          - '-d'
+          - 'Ubuntu-D'
+          - '-u'
+          - 'wentao'
+          - '--exec'
+          - '/bin/bash'
+          - '/home/wentao/mirsa/scripts/start-mcp.sh'
+        toolCallTimeoutMs: 120000

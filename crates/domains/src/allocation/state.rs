@@ -4,35 +4,166 @@ use super::abstract_value::{
 };
 use crate::interval::abstract_value::{Interval, add};
 use mirsa_framework::access_path::AccessPath;
+pub use mirsa_framework::call_model::is_vec_ty;
 use mirsa_framework::forward::DomainState;
 use mirsa_framework::printer::StateEntries;
+use mirsa_framework::revision::{Revision, Versioned};
 use mirsa_relations::symbolic::{SymbolicState, join_display_places};
-use rustc_middle::mir::{Body, LocalDecls, Place};
+use rustc_middle::mir::{Body, LocalDecls, Operand, Place};
 use rustc_middle::ty::{Ty, TyCtxt, TyKind, TypingEnv};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AllocationState<'tcx> {
-    pointers: HashMap<AccessPath, PointerValue>,
-    layouts: HashMap<AccessPath, LayoutValue>,
-    objects: HashMap<AllocationId, AllocationFact>,
-    tracked_pointers: HashSet<AccessPath>,
-    tracked_layouts: HashSet<AccessPath>,
-    display_places: HashMap<AccessPath, Place<'tcx>>,
+    pointers: Versioned<HashMap<AccessPath, PointerValue>>,
+    buffers: Versioned<HashMap<AccessPath, PointerValue>>,
+    layouts: Versioned<HashMap<AccessPath, LayoutValue>>,
+    objects: Versioned<HashMap<AllocationId, AllocationFact>>,
+    tracked_pointers: Versioned<HashSet<AccessPath>>,
+    tracked_layouts: Versioned<HashSet<AccessPath>>,
+    display_places: Versioned<HashMap<AccessPath, Place<'tcx>>>,
     bottom: bool,
     debug: bool,
 }
 
+pub enum AllocationEntry<'a> {
+    Pointer(&'a AccessPath, &'a PointerValue),
+    Buffer(&'a AccessPath, &'a PointerValue),
+    Layout(&'a AccessPath, &'a LayoutValue),
+    Object(&'a AllocationId, &'a AllocationFact),
+}
+
 impl<'tcx> AllocationState<'tcx> {
+    pub fn export_facts(&self, roots: &[AccessPath]) -> Vec<AllocationEntry<'_>> {
+        use mirsa_framework::facts::selected;
+        let mut out = Vec::new();
+        for (p, v) in &self.pointers {
+            if selected(p, roots) {
+                out.push(AllocationEntry::Pointer(p, v));
+            }
+        }
+        for (p, v) in &self.buffers {
+            if selected(p, roots) {
+                out.push(AllocationEntry::Buffer(p, v));
+            }
+        }
+        for (p, v) in &self.layouts {
+            if selected(p, roots) {
+                out.push(AllocationEntry::Layout(p, v));
+            }
+        }
+        let mut ids: HashSet<_> = self
+            .pointers
+            .iter()
+            .chain(&self.buffers)
+            .filter(|(path, _)| selected(path, roots))
+            .flat_map(|(_, value)| value.targets().map(|(id, _)| id))
+            .collect();
+        ids.extend(self.objects.keys().filter(|id| match id {
+            AllocationId::Stack(local) | AllocationId::External(local) => {
+                roots.iter().any(|p| p.root == *local)
+            }
+            AllocationId::ExternalPath(path) | AllocationId::ExternalBuffer(path) => {
+                selected(path, roots)
+            }
+            _ => false,
+        }));
+        for id in ids {
+            if let Some(fact) = self.objects.get(id) {
+                out.push(AllocationEntry::Object(id, fact));
+            }
+        }
+        out
+    }
+
+    pub fn project(
+        &self,
+        map: &impl mirsa_framework::mapping::PathMapping<'tcx>,
+        objects: &impl Fn(&AllocationId) -> Option<AllocationId>,
+    ) -> Self {
+        let pointers = self
+            .pointers
+            .iter()
+            .filter_map(|(path, value)| Some((map.path(path)?, value.map_objects(objects))))
+            .collect();
+        let buffers = self
+            .buffers
+            .iter()
+            .filter_map(|(path, value)| Some((map.path(path)?, value.map_objects(objects))))
+            .collect();
+        Self {
+            pointers,
+            buffers,
+            layouts: map.values(&self.layouts).into(),
+            objects: self
+                .objects
+                .iter()
+                .filter_map(|(id, value)| Some((objects(id)?, value.clone())))
+                .collect(),
+            tracked_pointers: map.paths(&self.tracked_pointers).into(),
+            tracked_layouts: map.paths(&self.tracked_layouts).into(),
+            display_places: map.places(&self.display_places).into(),
+            bottom: self.bottom,
+            debug: self.debug,
+        }
+    }
+
+    pub fn extend(&mut self, other: Self) {
+        self.pointers.extend(other.pointers);
+        self.buffers.extend(other.buffers);
+        self.layouts.extend(other.layouts);
+        self.objects.extend(other.objects);
+        self.tracked_pointers.extend(other.tracked_pointers);
+        self.tracked_layouts.extend(other.tracked_layouts);
+        self.display_places.extend(other.display_places);
+        self.bottom &= other.bottom;
+    }
+
+    pub fn referenced_objects(
+        &self,
+        roots: &HashSet<rustc_middle::mir::Local>,
+    ) -> HashSet<AllocationId> {
+        self.pointers
+            .iter()
+            .chain(&self.buffers)
+            .filter(|(path, _)| roots.contains(&path.root))
+            .flat_map(|(_, value)| value.targets().map(|(id, _)| id.clone()))
+            .collect()
+    }
+
+    pub fn invalidate_paths(&mut self, symbolic: &SymbolicState<'tcx>, paths: &[AccessPath]) {
+        let affected: Vec<_> = self
+            .buffers
+            .iter()
+            .filter(|(path, _)| symbolic.write_affects(path, paths))
+            .map(|(path, value)| (path.clone(), value.clone()))
+            .collect();
+        for (path, value) in affected {
+            self.deallocate(&value, true);
+            self.buffers.insert(path, PointerValue::unknown_non_null());
+        }
+        for (path, value) in &mut self.pointers {
+            if symbolic.write_affects(path, paths) {
+                *value = PointerValue::top();
+            }
+        }
+        for (path, value) in &mut self.layouts {
+            if symbolic.write_affects(path, paths) {
+                *value = LayoutValue::top();
+            }
+        }
+    }
+
     fn empty(bottom: bool, debug: bool) -> Self {
         Self {
-            pointers: HashMap::new(),
-            layouts: HashMap::new(),
-            objects: HashMap::new(),
-            tracked_pointers: HashSet::new(),
-            tracked_layouts: HashSet::new(),
-            display_places: HashMap::new(),
+            pointers: HashMap::new().into(),
+            buffers: HashMap::new().into(),
+            layouts: HashMap::new().into(),
+            objects: HashMap::new().into(),
+            tracked_pointers: HashSet::new().into(),
+            tracked_layouts: HashSet::new().into(),
+            display_places: HashMap::new().into(),
             bottom,
             debug,
         }
@@ -64,42 +195,77 @@ impl<'tcx> AllocationState<'tcx> {
 
         for (local, decl) in body.local_decls.iter_enumerated() {
             let extent = type_size(tcx, decl.ty).unwrap_or_else(Interval::top);
-            state.objects.insert(
-                AllocationId::Stack(local),
-                AllocationFact::live(AllocationOrigin::Stack, extent),
-            );
+            let mut fact = AllocationFact::live(AllocationOrigin::Stack, extent);
+            fact.alignment = type_alignment(tcx, decl.ty);
+            if !mirsa_framework::config::storage_markers_preserved(tcx)
+                && local.index() > body.arg_count
+            {
+                fact.status = AllocationStatus::top();
+            }
+            state.objects.insert(AllocationId::Stack(local), fact);
         }
 
         for place in places {
-            if !place.projection.is_empty() {
-                continue;
-            }
             let local_idx = place.local.index();
             let is_arg = local_idx >= 1 && local_idx <= body.arg_count;
             let Some(path) = AccessPath::from_place(*place) else {
                 continue;
             };
             let ty = place.ty(&body.local_decls, tcx).ty;
+            let external_id = if place.projection.is_empty() {
+                AllocationId::External(place.local)
+            } else {
+                AllocationId::ExternalPath(path.clone())
+            };
+            let (buffer_path, buffer_ty) = match ty.kind() {
+                TyKind::Ref(_, inner, _) => (path.deref(), *inner),
+                _ => (path.clone(), ty),
+            };
+            if is_arg && is_vec_ty(tcx, buffer_ty) {
+                let id = AllocationId::ExternalBuffer(buffer_path.clone());
+                state.set_object(
+                    id.clone(),
+                    AllocationFact::live(AllocationOrigin::External, Interval::new(0, i128::MAX)),
+                );
+                state.set_buffer(
+                    buffer_path,
+                    PointerValue::join(
+                        &PointerValue::target(id, Interval::new(0, 0)),
+                        &PointerValue::invalid_non_null(),
+                    ),
+                );
+            }
             if state.tracked_pointers.contains(&path) {
                 let value = if is_arg {
                     match ty.kind() {
                         TyKind::Ref(_, pointee, _) => {
-                            let id = AllocationId::External(place.local);
+                            let id = external_id.clone();
                             let minimum = type_size(tcx, *pointee)
                                 .map(|size| Interval::new(size.low, i128::MAX))
                                 .unwrap_or_else(Interval::top);
                             state.objects.insert(
                                 id.clone(),
-                                AllocationFact::live(AllocationOrigin::External, minimum),
+                                AllocationFact {
+                                    alignment: type_alignment(tcx, *pointee),
+                                    ..AllocationFact::live(AllocationOrigin::External, minimum)
+                                },
                             );
-                            PointerValue::target(id, Interval::new(0, 0))
+                            let pointer = PointerValue::target(id, Interval::new(0, 0));
+                            // Valid zero-sized references (including empty slices)
+                            // may be aligned dangling pointers, without an allocation.
+                            if minimum.low <= 0 {
+                                PointerValue::join(&pointer, &PointerValue::invalid_non_null())
+                            } else {
+                                pointer
+                            }
                         }
                         TyKind::RawPtr(_, _) => PointerValue::top(),
                         TyKind::Adt(_, _) if is_non_null_ty(tcx, ty) => {
-                            let id = AllocationId::External(place.local);
+                            let id = external_id.clone();
                             state.objects.insert(
                                 id.clone(),
                                 AllocationFact {
+                                    alignment: 1,
                                     origin: AllocationOrigin::External,
                                     status: AllocationStatus::top(),
                                     extent: Interval::top(),
@@ -111,7 +277,7 @@ impl<'tcx> AllocationState<'tcx> {
                                 &PointerValue::invalid_non_null(),
                             )
                         }
-                        _ => PointerValue::bottom(),
+                        _ => PointerValue::top(),
                     }
                 } else {
                     PointerValue::bottom()
@@ -127,6 +293,56 @@ impl<'tcx> AllocationState<'tcx> {
                         LayoutValue::bottom()
                     },
                 );
+            }
+        }
+        for place in places {
+            if place.local.index() == 0 || place.local.index() > body.arg_count {
+                continue;
+            }
+            let ty = place.ty(&body.local_decls, tcx).ty;
+            if !ty.is_box() {
+                continue;
+            }
+            let Some(path) = AccessPath::from_place(*place) else {
+                continue;
+            };
+            let id = AllocationId::ExternalBuffer(path.clone());
+            let size = ty.boxed_ty().and_then(|pointee| type_size(tcx, pointee));
+            let extent = size
+                .map(|size| Interval::new(size.low, i128::MAX))
+                .unwrap_or_else(|| Interval::new(0, i128::MAX));
+            state.set_object(
+                id.clone(),
+                AllocationFact {
+                    alignment: ty.boxed_ty().map(|ty| type_alignment(tcx, ty)).unwrap_or(1),
+                    ..AllocationFact::live(AllocationOrigin::External, extent)
+                },
+            );
+            let pointer = match size {
+                Some(size) if size.high == 0 => PointerValue::invalid_non_null(),
+                Some(size) if size.low > 0 => PointerValue::target(id, Interval::new(0, 0)),
+                _ => PointerValue::join(
+                    &PointerValue::target(id, Interval::new(0, 0)),
+                    &PointerValue::invalid_non_null(),
+                ),
+            };
+            state.set_buffer(path.clone(), pointer.clone());
+            for candidate in places {
+                let Some(candidate_path) = AccessPath::from_place(*candidate) else {
+                    continue;
+                };
+                let Some(suffix) = candidate_path.strip_pattern_prefix(&path) else {
+                    continue;
+                };
+                if !suffix.is_empty()
+                    && suffix.len() <= 3
+                    && suffix.iter().all(|elem| {
+                        matches!(elem, mirsa_framework::access_path::AccessPathElem::Field(0))
+                    })
+                    && state.tracked_pointers.contains(&candidate_path)
+                {
+                    state.set_pointer(candidate_path, pointer.clone());
+                }
             }
         }
         state
@@ -149,7 +365,7 @@ impl<'tcx> AllocationState<'tcx> {
                     .entry(path.clone())
                     .or_insert_with(PointerValue::bottom);
             }
-            if is_layout_ty(tcx, ty) {
+            if is_layout_ty(tcx, ty) || is_layout_result_ty(tcx, ty) {
                 self.tracked_layouts.insert(path.clone());
                 self.layouts
                     .entry(path.clone())
@@ -214,7 +430,7 @@ impl<'tcx> AllocationState<'tcx> {
         let Some(path) = self.pointer_path_resolved(symbolic, place) else {
             return;
         };
-        self.display_places.entry(path.clone()).or_insert(place);
+        self.display_places.insert_if_absent(path.clone(), place);
         self.set_pointer(path, value);
     }
 
@@ -235,7 +451,7 @@ impl<'tcx> AllocationState<'tcx> {
             .lookup_pointer(&path)
             .unwrap_or_else(PointerValue::bottom);
         let joined = PointerValue::join(&current, &value);
-        self.display_places.entry(path.clone()).or_insert(place);
+        self.display_places.insert_if_absent(path.clone(), place);
         self.set_pointer(path, joined);
     }
 
@@ -251,27 +467,71 @@ impl<'tcx> AllocationState<'tcx> {
         }
     }
 
-    pub fn copy_pointer_tree(&mut self, dst: &AccessPath, src: &AccessPath, default: PointerValue) {
-        let mut suffixes = HashSet::new();
-        suffixes.insert(Vec::new());
-        for path in &self.tracked_pointers {
-            if let Some(suffix) = path.strip_pattern_prefix(dst) {
-                suffixes.insert(suffix);
-            }
-            if let Some(suffix) = path.strip_pattern_prefix(src) {
-                suffixes.insert(suffix);
+    pub(super) fn forget_call_result(
+        &mut self,
+        symbolic: &SymbolicState<'tcx>,
+        place: Place<'tcx>,
+    ) {
+        let Some(path) = self.pointer_path_resolved(symbolic, place) else {
+            return;
+        };
+        for (candidate, value) in &mut self.pointers {
+            if candidate.strip_pattern_prefix(&path).is_some() {
+                *value = PointerValue::top();
             }
         }
-        for suffix in suffixes {
-            let dst_path = dst.join_suffix(&suffix);
+        for (candidate, value) in &mut self.layouts {
+            if candidate.strip_pattern_prefix(&path).is_some() {
+                *value = LayoutValue::top();
+            }
+        }
+        self.forget_buffers(&path);
+    }
+
+    pub fn copy_pointer_tree(&mut self, dst: &AccessPath, src: &AccessPath, default: PointerValue) {
+        let buffers: Vec<_> = self
+            .buffers
+            .iter()
+            .filter_map(|(path, value)| {
+                path.strip_pattern_prefix(src)
+                    .map(|suffix| (dst.join_suffix(&suffix), value.clone()))
+            })
+            .collect();
+        self.buffers
+            .retain(|path, _| path.strip_pattern_prefix(dst).is_none());
+        self.buffers.extend(buffers);
+        for (dst_path, src_path) in
+            mirsa_framework::mapping::subtree_pairs(dst, src, self.tracked_pointers.iter(), true)
+        {
             if !self.tracked_pointers.contains(&dst_path) {
                 continue;
             }
-            let src_path = src.join_suffix(&suffix);
             let value = self
                 .lookup_pointer(&src_path)
                 .unwrap_or_else(|| default.clone());
             self.set_pointer(dst_path, value);
+        }
+    }
+
+    pub(super) fn assign_from_operand(
+        &mut self,
+        symbolic: &SymbolicState<'tcx>,
+        destination: Place<'tcx>,
+        operand: &Operand<'tcx>,
+    ) {
+        let Some(source) = operand
+            .place()
+            .and_then(|place| self.pointer_path_resolved(symbolic, place))
+        else {
+            return;
+        };
+        if let Some(destination) = self.pointer_path_resolved(symbolic, destination) {
+            self.copy_pointer_tree(&destination, &source, PointerValue::top());
+            if matches!(operand, Operand::Move(_)) && destination != source {
+                self.forget_buffers(&source);
+            }
+        } else if matches!(operand, Operand::Move(_)) {
+            self.drop_buffers(&source, true);
         }
     }
 
@@ -311,11 +571,59 @@ impl<'tcx> AllocationState<'tcx> {
         self.bottom = false;
         self.debug(format_args!("layout {path} := {value}"));
         self.layouts.insert(path.clone(), value);
-        self.display_places.entry(path).or_insert(place);
+        self.display_places.insert_if_absent(path, place);
     }
 
     pub fn object(&self, id: &AllocationId) -> Option<&AllocationFact> {
         self.objects.get(id)
+    }
+
+    pub fn buffer(&self, path: &AccessPath) -> PointerValue {
+        self.buffers
+            .get(path)
+            .cloned()
+            .unwrap_or_else(PointerValue::unknown_non_null)
+    }
+
+    pub fn set_buffer(&mut self, path: AccessPath, value: PointerValue) {
+        self.bottom = false;
+        self.buffers.insert(path, value);
+    }
+
+    pub fn forget_buffers(&mut self, path: &AccessPath) {
+        self.buffers
+            .retain(|candidate, _| candidate.strip_pattern_prefix(path).is_none());
+    }
+
+    pub fn drop_buffers(&mut self, path: &AccessPath, conditional: bool) {
+        let values: Vec<_> = self
+            .buffers
+            .iter()
+            .filter(|(candidate, _)| candidate.strip_pattern_prefix(path).is_some())
+            .map(|(_, value)| value.clone())
+            .collect();
+        for value in values {
+            self.deallocate(&value, conditional);
+        }
+        self.forget_buffers(path);
+    }
+
+    pub fn allocate_buffer(&mut self, id: AllocationId, extent: Interval) -> PointerValue {
+        if extent.high == 0 {
+            return PointerValue::invalid_non_null();
+        }
+        self.allocate_fallibly(id.clone(), extent);
+        let mut fact = self.objects[&id].clone();
+        if fact.multiplicity.is_exactly_one() {
+            fact.status = AllocationStatus::live();
+        }
+        self.set_object(id.clone(), fact);
+        let value = PointerValue::target(id, Interval::new(0, 0));
+        if extent.low <= 0 {
+            PointerValue::join(&value, &PointerValue::invalid_non_null())
+        } else {
+            value
+        }
     }
 
     pub fn objects(&self) -> impl Iterator<Item = (&AllocationId, &AllocationFact)> {
@@ -349,6 +657,7 @@ impl<'tcx> AllocationState<'tcx> {
         self.set_object(
             id.clone(),
             AllocationFact {
+                alignment: 1,
                 origin: id.origin(),
                 status,
                 extent: known_extent,
@@ -364,6 +673,20 @@ impl<'tcx> AllocationState<'tcx> {
         }
         let exact = pointer.exact_target().map(|(id, _)| id.clone());
         let ids: Vec<_> = pointer.targets().map(|(id, _)| id.clone()).collect();
+        let aliases: Vec<_> = self
+            .objects
+            .keys()
+            .filter(|candidate| {
+                !ids.contains(candidate) && ids.iter().any(|id| id.may_alias(candidate))
+            })
+            .cloned()
+            .collect();
+        for id in aliases {
+            if let Some(mut fact) = self.objects.get(&id).cloned() {
+                fact.status = fact.status.join(AllocationStatus::dead());
+                self.set_object(id, fact);
+            }
+        }
         for id in ids {
             let Some(old) = self.objects.get(&id).cloned() else {
                 continue;
@@ -406,7 +729,10 @@ impl<'tcx> AllocationState<'tcx> {
             return;
         };
         fact.status = if live {
-            AllocationStatus::live()
+            if fact.status != AllocationStatus::live() {
+                fact.multiplicity = fact.multiplicity.after_allocation();
+            }
+            fact.status.join(AllocationStatus::live())
         } else {
             AllocationStatus::dead()
         };
@@ -480,6 +806,31 @@ impl<'tcx> AllocationState<'tcx> {
 
     pub fn is_base(&self, pointer: &PointerValue) -> AbstractBool {
         self.evaluate_pointer(pointer, |_, offset| interval_is_zero(*offset))
+    }
+
+    pub fn constrain_minimum_extent(&mut self, pointer: &PointerValue, bytes: i128) -> bool {
+        let Some((id, offset)) = pointer.exact_target() else {
+            return true;
+        };
+        if offset.is_empty() || offset.low < 0 || bytes <= 0 {
+            return true;
+        }
+        let Some(minimum) = offset.low.checked_add(bytes) else {
+            return true;
+        };
+        let Some(fact) = self.objects.get(id) else {
+            return true;
+        };
+        if !fact.status.is_definitely_live() || !fact.multiplicity.is_exactly_one() {
+            return true;
+        }
+        if minimum > fact.extent.high {
+            return false;
+        }
+        if minimum > fact.extent.low {
+            self.objects.get_mut(id).unwrap().extent.low = minimum;
+        }
+        true
     }
 
     pub fn range_in_allocation(&self, pointer: &PointerValue, len: Interval) -> AbstractBool {
@@ -558,14 +909,38 @@ impl<'tcx> AllocationState<'tcx> {
         true
     }
 
+    pub fn pointer_within_budget(
+        &self,
+        symbolic: &SymbolicState<'tcx>,
+        place: Place<'tcx>,
+        limit: usize,
+    ) -> bool {
+        let Some(path) = self.pointer_path_resolved(symbolic, place) else {
+            return true;
+        };
+        let Some(patterns) = path.matching_patterns() else {
+            return false;
+        };
+        let mut count = 0;
+        for pattern in patterns {
+            if let Some(value) = self.pointers.get(&pattern) {
+                count += value.target_count();
+                if count > limit {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
     fn lookup_pointer(&self, path: &AccessPath) -> Option<PointerValue> {
         let exact = self.pointers.get(path).cloned();
         let mut value = exact.clone();
-        for (candidate, candidate_value) in &self.pointers {
-            if candidate == path {
-                continue;
-            }
-            if path.matches_pattern(candidate) {
+        let Some(patterns) = path.matching_patterns() else {
+            return Some(PointerValue::top());
+        };
+        for candidate in patterns.into_iter().skip(1) {
+            if let Some(candidate_value) = self.pointers.get(&candidate) {
                 value = Some(PointerValue::join(
                     &value.unwrap_or_else(PointerValue::bottom),
                     candidate_value,
@@ -591,6 +966,7 @@ impl<'tcx> DomainState<'tcx> for AllocationState<'tcx> {
     fn state_changed(previous: &Self, next: &Self) -> bool {
         previous.bottom != next.bottom
             || previous.pointers != next.pointers
+            || previous.buffers != next.buffers
             || previous.layouts != next.layouts
             || previous.objects != next.objects
     }
@@ -607,6 +983,11 @@ impl<'tcx> fmt::Display for AllocationState<'tcx> {
             .filter(|(_, value)| !value.is_bottom())
             .map(|(path, value)| format!("{path} => {value}"))
             .collect();
+        entries.extend(
+            self.buffers
+                .iter()
+                .map(|(path, value)| format!("buffer({path}) => {value}")),
+        );
         entries.extend(
             self.objects
                 .iter()
@@ -659,6 +1040,18 @@ fn join_state<'tcx>(
         return left.clone();
     }
     let mut out = AllocationState::empty(false, left.debug || right.debug);
+    for path in left.buffers.keys().chain(right.buffers.keys()) {
+        let a = left.buffer(path);
+        let b = right.buffer(path);
+        out.buffers.insert(
+            path.clone(),
+            if widening {
+                PointerValue::widen(&a, &b)
+            } else {
+                PointerValue::join(&a, &b)
+            },
+        );
+    }
     out.tracked_pointers = left
         .tracked_pointers
         .union(&right.tracked_pointers)
@@ -727,7 +1120,7 @@ fn join_state<'tcx>(
             },
         );
     }
-    out.display_places = join_display_places(&left.display_places, &right.display_places);
+    out.display_places = join_display_places(&left.display_places, &right.display_places).into();
     out
 }
 
@@ -751,12 +1144,35 @@ pub fn pointer_pointee_type<'tcx>(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> Option<Ty<
     }
 }
 
+pub fn is_layout_result_ty(tcx: TyCtxt<'_>, ty: Ty<'_>) -> bool {
+    let TyKind::Adt(adt, args) = ty.kind() else {
+        return false;
+    };
+    tcx.is_diagnostic_item(rustc_span::Symbol::intern("Result"), adt.did())
+        && args
+            .types()
+            .next()
+            .is_some_and(|inner| is_layout_ty(tcx, inner))
+}
+
 pub fn is_layout_ty(tcx: TyCtxt<'_>, ty: Ty<'_>) -> bool {
     let TyKind::Adt(def, _) = ty.kind() else {
         return false;
     };
     let path = tcx.def_path_str(def.did());
     path.ends_with("::alloc::layout::Layout") || path.ends_with("::alloc::Layout")
+}
+
+pub fn type_alignment<'tcx>(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> u64 {
+    let ty = match ty.kind() {
+        TyKind::Slice(element) => *element,
+        TyKind::Str => return 1,
+        _ => ty,
+    };
+    tcx.layout_of(TypingEnv::fully_monomorphized().as_query_input(ty))
+        .ok()
+        .map(|layout| layout.align.abi.bytes())
+        .unwrap_or(1)
 }
 
 pub fn type_size<'tcx>(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> Option<Interval> {
@@ -854,5 +1270,22 @@ mod tests {
         let left = PointerValue::target(id.clone(), Interval::new(0, 0));
         let right = PointerValue::target(id, Interval::new(4, 4));
         assert_eq!(state.same_allocation(&left, &right), AbstractBool::Top);
+    }
+}
+
+impl<'tcx> AllocationState<'tcx> {
+    pub fn revision(&self) -> ([Revision; 7], bool) {
+        (
+            [
+                self.pointers.revision(),
+                self.buffers.revision(),
+                self.layouts.revision(),
+                self.objects.revision(),
+                self.tracked_pointers.revision(),
+                self.tracked_layouts.revision(),
+                self.display_places.revision(),
+            ],
+            self.bottom,
+        )
     }
 }

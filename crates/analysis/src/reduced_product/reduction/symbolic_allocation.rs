@@ -1,5 +1,6 @@
 use mirsa_domains::allocation::AllocationState;
 use mirsa_domains::allocation::state::is_allocation_pointer;
+use mirsa_framework::reduction::MAX_RELATED;
 use mirsa_relations::symbolic::{SymbolicExpr, SymbolicFact, SymbolicState};
 use rustc_middle::mir::{BinOp, LocalDecls, Operand};
 use rustc_middle::ty::{TyCtxt, TyKind};
@@ -28,7 +29,7 @@ pub fn reduce_fact<'tcx>(
     let (Operand::Copy(place) | Operand::Move(place)) = operand else {
         return true;
     };
-    let Some(SymbolicExpr::Cmp { op, left, right }) = symbolic.expr_for_place(*place) else {
+    let Some(SymbolicExpr::Cmp { op, left, right }) = super::expression(symbolic, *place) else {
         return true;
     };
     let equality_holds = matches!((op, truth), (BinOp::Eq, true) | (BinOp::Ne, false));
@@ -44,6 +45,11 @@ pub fn reduce_fact<'tcx>(
     let (Operand::Copy(right) | Operand::Move(right)) = right else {
         return true;
     };
+    if !state.pointer_within_budget(symbolic, *left, MAX_RELATED)
+        || !state.pointer_within_budget(symbolic, *right, MAX_RELATED)
+    {
+        return true;
+    }
     state.constrain_equal_paths(symbolic, *left, *right)
 }
 

@@ -7,26 +7,40 @@ members = [
     "crates/domains",
     "crates/contracts",
     "crates/analysis",
+    "crates/solver",
+    "crates/dsl",
 ]
 resolver = "2"
 
 [package]
 name = "mirsa"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 
 description = "rust mir static analysis"
 license = "MIT"
 repository = "https://github.com/990466307/mirsa"
-include = ["src/**", "Cargo.toml", "README.md", "rust-toolchain.toml"]
+include = ["src/**", "docs/**", "examples/query_dsl.rs", "examples/inputs/query_target.rs", "Cargo.toml", "README.md", "rust-toolchain.toml"]
 
 [dependencies]
-mirsa_analysis = { package = "mirsa-analysis", path = "crates/analysis", version = "0.3.0" }
-mirsa_contracts = { package = "mirsa-contracts", path = "crates/contracts", version = "0.3.0" }
-mirsa_core = { package = "mirsa-core", path = "crates/core", version = "0.3.0" }
-mirsa_domains = { package = "mirsa-domains", path = "crates/domains", version = "0.3.0" }
-mirsa_framework = { package = "mirsa-framework", path = "crates/framework", version = "0.3.0" }
-mirsa_relations = { package = "mirsa-relations", path = "crates/relations", version = "0.3.0" }
+mirsa_dsl = { package = "mirsa-dsl", path = "crates/dsl", version = "0.4.0" }
+mirsa_analysis = { package = "mirsa-analysis", path = "crates/analysis", version = "0.4.0" }
+mirsa_contracts = { package = "mirsa-contracts", path = "crates/contracts", version = "0.4.0" }
+mirsa_core = { package = "mirsa-core", path = "crates/core", version = "0.4.0" }
+mirsa_domains = { package = "mirsa-domains", path = "crates/domains", version = "0.4.0" }
+mirsa_framework = { package = "mirsa-framework", path = "crates/framework", version = "0.4.0" }
+mirsa_relations = { package = "mirsa-relations", path = "crates/relations", version = "0.4.0" }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+
+[features]
+cli = ["dep:serde", "dep:serde_json"]
+z3 = ["mirsa_analysis/z3"]
+
+[[bin]]
+name = "mirsa-query"
+path = "src/bin/mirsa-query.rs"
+required-features = ["cli"]
 
 [package.metadata.rust-analyzer]
 rustc_private = true

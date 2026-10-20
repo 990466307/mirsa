@@ -1,8 +1,8 @@
 use rustc_hir::def_id::DefId;
 use rustc_middle::mir::visit::{PlaceContext, Visitor};
-use rustc_middle::mir::{Body, Location, Place, ProjectionElem};
-use rustc_middle::ty::TyCtxt;
+use rustc_middle::mir::{Body, Location, Place, PlaceElem, ProjectionElem};
 use rustc_middle::ty::TyKind;
+use rustc_middle::ty::{Ty, TyCtxt, TypingEnv};
 use std::collections::HashSet;
 
 const MAX_PRECOLLECT_ARRAY_ELEMENTS: u64 = 32;
@@ -15,30 +15,58 @@ struct PlaceCollector<'tcx> {
     places: HashSet<Place<'tcx>>,
 }
 
+pub fn for_each_field_projection<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    ty: Ty<'tcx>,
+    mut visit: impl FnMut(&[PlaceElem<'tcx>], Ty<'tcx>),
+) {
+    match *ty.kind() {
+        TyKind::Tuple(_) | TyKind::Closure(_, _) => {
+            let fields = match ty.kind() {
+                TyKind::Closure(_, args) => args.as_closure().upvar_tys(),
+                TyKind::Tuple(fields) => *fields,
+                _ => unreachable!(),
+            };
+            for (idx, field_ty) in fields.iter().enumerate() {
+                visit(&[ProjectionElem::Field(idx.into(), field_ty)], field_ty);
+            }
+        }
+        TyKind::Adt(adt_def, substs) => {
+            for (variant_index, variant) in adt_def.variants().iter_enumerated() {
+                for (idx, field) in variant.fields.iter().enumerate() {
+                    let field_ty = tcx
+                        .try_normalize_erasing_regions(
+                            TypingEnv::fully_monomorphized(),
+                            field.ty(tcx, substs),
+                        )
+                        .unwrap_or_else(|_| field.ty(tcx, substs));
+                    let field = ProjectionElem::Field(idx.into(), field_ty);
+                    if adt_def.is_enum() {
+                        visit(
+                            &[ProjectionElem::Downcast(None, variant_index), field],
+                            field_ty,
+                        );
+                    } else {
+                        visit(&[field], field_ty);
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 fn collect_immediate_projections<'tcx>(
     tcx: TyCtxt<'tcx>,
     places: &mut HashSet<Place<'tcx>>,
     base: Place<'tcx>,
-    ty: rustc_middle::ty::Ty<'tcx>,
+    ty: Ty<'tcx>,
 ) {
     match ty.kind() {
-        TyKind::Tuple(fields) => {
-            for (idx, field_ty) in fields.iter().enumerate() {
-                let proj = base.project_deeper(&[ProjectionElem::Field(idx.into(), field_ty)], tcx);
-                places.insert(proj);
-                collect_immediate_projections(tcx, places, proj, field_ty);
-            }
-        }
-        TyKind::Adt(adt_def, substs) => {
-            for variant in adt_def.variants().iter() {
-                for (idx, field) in variant.fields.iter().enumerate() {
-                    let field_ty = field.ty(tcx, substs);
-                    let proj =
-                        base.project_deeper(&[ProjectionElem::Field(idx.into(), field_ty)], tcx);
-                    places.insert(proj);
-                    collect_immediate_projections(tcx, places, proj, field_ty);
-                }
-            }
+        TyKind::Ref(_, inner, _) if matches!(inner.kind(), TyKind::Array(..)) => {
+            let pointee = base.project_deeper(&[ProjectionElem::Deref], tcx);
+            places.insert(pointee);
+            collect_immediate_projections(tcx, places, pointee, *inner);
         }
         TyKind::Array(_, len) => {
             if let Some(len) = len.try_to_target_usize(tcx) {
@@ -58,6 +86,13 @@ fn collect_immediate_projections<'tcx>(
                     places.insert(proj);
                 }
             }
+        }
+        TyKind::Tuple(_) | TyKind::Adt(..) => {
+            for_each_field_projection(tcx, ty, |projection, field_ty| {
+                let field = base.project_deeper(projection, tcx);
+                places.insert(field);
+                collect_immediate_projections(tcx, places, field, field_ty);
+            });
         }
         _ => {}
     }

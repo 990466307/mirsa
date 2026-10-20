@@ -18,32 +18,79 @@ pub enum AllocationId {
     Heap(AllocationSite),
     Static(DefId),
     External(Local),
+    ExternalPath(AccessPath),
+    ExternalBuffer(AccessPath),
+    Input {
+        index: usize,
+        origin: AllocationOrigin,
+        may_alias: bool,
+    },
+    Call {
+        site: AllocationSite,
+        caller: DefId,
+        location: rustc_middle::mir::Location,
+        callee: DefId,
+        object: Box<AllocationId>,
+    },
 }
 
 impl AllocationId {
     pub fn origin(&self) -> AllocationOrigin {
         match self {
+            Self::Input { origin, .. } => *origin,
+            Self::Call { object, .. } => object.origin(),
             Self::Stack(_) => AllocationOrigin::Stack,
             Self::Heap(_) => AllocationOrigin::Heap,
             Self::Static(_) => AllocationOrigin::Static,
-            Self::External(_) => AllocationOrigin::External,
+            Self::External(_) | Self::ExternalPath(_) | Self::ExternalBuffer(_) => {
+                AllocationOrigin::External
+            }
         }
     }
 
     /// Different external arguments can still denote the same caller-owned
     /// allocation. Other distinct abstract objects are disjoint.
     pub fn may_alias(&self, other: &Self) -> bool {
-        self == other || matches!((self, other), (Self::External(_), Self::External(_)))
+        self == other
+            || matches!(
+                (self, other),
+                (
+                    Self::Input {
+                        may_alias: true,
+                        ..
+                    },
+                    Self::Input {
+                        may_alias: true,
+                        ..
+                    }
+                )
+            )
+            || matches!(
+                (self, other),
+                (
+                    Self::External(_) | Self::ExternalPath(_) | Self::ExternalBuffer(_),
+                    Self::External(_) | Self::ExternalPath(_) | Self::ExternalBuffer(_)
+                )
+            )
     }
 }
 
 impl fmt::Display for AllocationId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Input { index, .. } => write!(f, "input_object({index})"),
+            Self::Call {
+                site,
+                callee,
+                object,
+                ..
+            } => write!(f, "call({callee:?}, {}, {object})", site.destination),
             Self::Stack(local) => write!(f, "stack({local:?})"),
             Self::Heap(site) => write!(f, "heap({:?}, {})", site.span, site.destination),
             Self::Static(def_id) => write!(f, "static({def_id:?})"),
             Self::External(local) => write!(f, "external({local:?})"),
+            Self::ExternalPath(path) => write!(f, "external({path})"),
+            Self::ExternalBuffer(path) => write!(f, "external_buffer({path})"),
         }
     }
 }
@@ -172,6 +219,16 @@ impl AllocationMultiplicity {
         Self(self.0 | other.0)
     }
 
+    pub const fn may_be_zero(self) -> bool {
+        self.0 & Self::ZERO != 0
+    }
+    pub const fn may_be_one(self) -> bool {
+        self.0 & Self::ONE != 0
+    }
+    pub const fn may_be_many(self) -> bool {
+        self.0 & Self::MANY != 0
+    }
+
     pub const fn is_exactly_one(self) -> bool {
         self.0 == Self::ONE
     }
@@ -206,6 +263,8 @@ impl fmt::Display for AllocationMultiplicity {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AllocationFact {
+    /// Guaranteed power-of-two divisor of the object base address; 1 is unknown.
+    pub alignment: u64,
     pub origin: AllocationOrigin,
     pub status: AllocationStatus,
     pub extent: Interval,
@@ -215,6 +274,7 @@ pub struct AllocationFact {
 impl AllocationFact {
     pub fn absent(origin: AllocationOrigin) -> Self {
         Self {
+            alignment: 1,
             origin,
             status: AllocationStatus::absent(),
             extent: Interval::empty(),
@@ -224,6 +284,7 @@ impl AllocationFact {
 
     pub fn live(origin: AllocationOrigin, extent: Interval) -> Self {
         Self {
+            alignment: 1,
             origin,
             status: AllocationStatus::live(),
             extent,
@@ -233,6 +294,7 @@ impl AllocationFact {
 
     pub fn join(left: &Self, right: &Self) -> Self {
         Self {
+            alignment: left.alignment.min(right.alignment),
             origin: if left.origin == right.origin {
                 left.origin
             } else {
@@ -246,6 +308,7 @@ impl AllocationFact {
 
     pub fn widen(previous: &Self, next: &Self) -> Self {
         Self {
+            alignment: previous.alignment.min(next.alignment),
             origin: if previous.origin == next.origin {
                 previous.origin
             } else {
@@ -262,8 +325,8 @@ impl fmt::Display for AllocationFact {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "{} {} bytes={} count={}",
-            self.origin, self.status, self.extent, self.multiplicity
+            "{} {} bytes={} count={} align={}",
+            self.origin, self.status, self.extent, self.multiplicity, self.alignment
         )
     }
 }
@@ -280,6 +343,22 @@ pub struct PointerValue {
 }
 
 impl PointerValue {
+    pub fn map_objects(&self, map: &impl Fn(&AllocationId) -> Option<AllocationId>) -> Self {
+        let mut out = self.clone();
+        out.targets.clear();
+        for (id, offset) in &self.targets {
+            if let Some(id) = map(id) {
+                out.targets
+                    .entry(id)
+                    .and_modify(|old| *old = join_interval(old, offset))
+                    .or_insert(*offset);
+            } else {
+                out.unknown = true;
+            }
+        }
+        out
+    }
+
     pub fn bottom() -> Self {
         Self {
             targets: HashMap::new(),
@@ -456,6 +535,15 @@ impl PointerValue {
         out
     }
 
+    /// Restrict to pointers carrying allocation provenance. Unknown targets
+    /// remain unknown; this does not invent an object identity or lifetime.
+    pub fn with_allocation(&self) -> Self {
+        let mut value = self.clone();
+        value.may_be_null = false;
+        value.may_be_invalid_non_null = false;
+        value
+    }
+
     pub fn without_null(&self) -> Self {
         let mut out = self.clone();
         out.may_be_null = false;
@@ -621,6 +709,19 @@ mod tests {
 
     fn stack(index: usize) -> AllocationId {
         AllocationId::Stack(Local::from_usize(index))
+    }
+
+    #[test]
+    fn object_alignment_merge_keeps_only_common_guarantees() {
+        let mut left = AllocationFact::live(AllocationOrigin::Stack, Interval::new(8, 8));
+        left.alignment = 8;
+        let mut right = left.clone();
+        right.alignment = 4;
+        assert_eq!(AllocationFact::join(&left, &right).alignment, 4);
+        assert_eq!(AllocationFact::widen(&left, &right).alignment, 4);
+        right.alignment = 1;
+        assert_eq!(AllocationFact::join(&left, &right).alignment, 1);
+        assert_eq!(AllocationFact::widen(&left, &right).alignment, 1);
     }
 
     #[test]

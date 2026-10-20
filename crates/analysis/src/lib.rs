@@ -6,6 +6,8 @@ extern crate rustc_middle;
 extern crate rustc_span;
 
 mod combined_warnings;
+pub mod interprocedural;
+pub mod query;
 pub mod reduced_product;
 
 pub use reduced_product as combined;

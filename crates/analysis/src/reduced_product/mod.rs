@@ -1,6 +1,8 @@
 pub mod branch;
+mod demand;
 pub mod engine;
-pub mod reduce;
+mod memo;
+mod reduce;
 mod reduction;
 pub mod state;
 

@@ -1,9 +1,11 @@
 use mirsa_framework::access_path::AccessPath;
 use mirsa_framework::forward::DomainState;
+use mirsa_framework::mapping::update_value_children;
 use mirsa_framework::printer::StateEntries;
+use mirsa_framework::revision::{Revision, Versioned};
 use mirsa_relations::symbolic::{SymbolicState, join_display_places};
 use rustc_middle::mir::{LocalDecls, Place};
-use rustc_middle::ty::{TyCtxt, TyKind};
+use rustc_middle::ty::{ScalarInt, TyCtxt, TyKind};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
@@ -12,22 +14,228 @@ use super::float_interval::{FloatInterval, join as join_float, widen as widen_fl
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IntervalState<'tcx> {
-    interval: HashMap<AccessPath, Interval>,
-    float_interval: HashMap<AccessPath, FloatInterval>,
-    len: HashMap<AccessPath, Interval>,
-    tracked_len: HashSet<AccessPath>,
-    display_places: HashMap<AccessPath, Place<'tcx>>,
+    interval: Versioned<HashMap<AccessPath, Interval>>,
+    integer_bits: Versioned<HashMap<AccessPath, ScalarInt>>,
+    enum_variants: Versioned<HashMap<AccessPath, usize>>,
+    float_interval: Versioned<HashMap<AccessPath, FloatInterval>>,
+    len: Versioned<HashMap<AccessPath, Interval>>,
+    tracked_len: Versioned<HashSet<AccessPath>>,
+    display_places: Versioned<HashMap<AccessPath, Place<'tcx>>>,
     debug: bool,
 }
 
+pub enum IntervalFact<'a> {
+    Range(&'a AccessPath, &'a Interval),
+    Bits(&'a AccessPath, &'a ScalarInt),
+    Variant(&'a AccessPath, usize),
+    Float(&'a AccessPath, &'a FloatInterval),
+    Length(&'a AccessPath, &'a Interval),
+}
+
 impl<'tcx> IntervalState<'tcx> {
+    pub fn export_facts(&self, roots: &[AccessPath]) -> Vec<IntervalFact<'_>> {
+        use mirsa_framework::facts::selected;
+        let mut out = Vec::new();
+        for (p, v) in &self.interval {
+            if selected(p, roots) {
+                out.push(IntervalFact::Range(p, v));
+            }
+        }
+        for (p, v) in &self.integer_bits {
+            if selected(p, roots) {
+                out.push(IntervalFact::Bits(p, v));
+            }
+        }
+        for (p, v) in &self.enum_variants {
+            if selected(p, roots) {
+                out.push(IntervalFact::Variant(p, *v));
+            }
+        }
+        for (p, v) in &self.float_interval {
+            if selected(p, roots) {
+                out.push(IntervalFact::Float(p, v));
+            }
+        }
+        for (p, v) in &self.len {
+            if selected(p, roots) {
+                out.push(IntervalFact::Length(p, v));
+            }
+        }
+        out
+    }
+
+    pub fn project(&self, map: &impl mirsa_framework::mapping::PathMapping<'tcx>) -> Self {
+        Self {
+            interval: map.values(&self.interval).into(),
+            integer_bits: map.values(&self.integer_bits).into(),
+            enum_variants: map.values(&self.enum_variants).into(),
+            float_interval: map.values(&self.float_interval).into(),
+            len: map.values(&self.len).into(),
+            tracked_len: map.paths(&self.tracked_len).into(),
+            display_places: map.places(&self.display_places).into(),
+            debug: self.debug,
+        }
+    }
+
+    pub fn extend(&mut self, other: Self) {
+        self.interval.extend(other.interval);
+        self.integer_bits.extend(other.integer_bits);
+        self.enum_variants.extend(other.enum_variants);
+        self.float_interval.extend(other.float_interval);
+        self.len.extend(other.len);
+        self.tracked_len.extend(other.tracked_len);
+        self.display_places.extend(other.display_places);
+    }
+
+    pub fn enum_variant_resolved(
+        &self,
+        symbolic: &SymbolicState<'tcx>,
+        place: Place<'tcx>,
+    ) -> Option<usize> {
+        self.enum_variants
+            .get(&symbolic.normalize_place(place)?)
+            .copied()
+    }
+
+    pub fn set_enum_variant_resolved(
+        &mut self,
+        symbolic: &SymbolicState<'tcx>,
+        place: Place<'tcx>,
+        variant: usize,
+    ) {
+        if let Some(path) = symbolic.normalize_place(place) {
+            self.enum_variants.insert(path, variant);
+        }
+    }
+
+    pub fn integer_bits_resolved(
+        &self,
+        symbolic: &SymbolicState<'tcx>,
+        place: Place<'tcx>,
+    ) -> Option<ScalarInt> {
+        self.integer_bits
+            .get(&symbolic.normalize_place(place)?)
+            .copied()
+    }
+
+    pub fn set_integer_bits_resolved(
+        &mut self,
+        symbolic: &SymbolicState<'tcx>,
+        place: Place<'tcx>,
+        value: ScalarInt,
+    ) {
+        if let Some(path) = symbolic.normalize_place(place) {
+            self.integer_bits.insert(path, value);
+        }
+    }
+
+    pub fn invalidate_value_facts(&mut self, symbolic: &SymbolicState<'tcx>, paths: &[AccessPath]) {
+        self.integer_bits
+            .retain(|path, _| !symbolic.write_affects(path, paths));
+        self.enum_variants
+            .retain(|path, _| !symbolic.write_affects(path, paths));
+    }
+
+    pub fn invalidate_paths(&mut self, symbolic: &SymbolicState<'tcx>, paths: &[AccessPath]) {
+        self.invalidate_value_facts(symbolic, paths);
+        for (path, value) in &mut self.interval {
+            if symbolic.write_affects(path, paths) {
+                *value = Interval::top();
+            }
+        }
+        for (path, value) in &mut self.float_interval {
+            if symbolic.write_affects(path, paths) {
+                *value = FloatInterval::top();
+            }
+        }
+        for (path, value) in &mut self.len {
+            if symbolic.write_affects(path, paths) {
+                *value = Interval::top();
+            }
+        }
+    }
+
+    pub(super) fn invalidate_children(&mut self, destination: &AccessPath) {
+        update_value_children(&mut self.interval, destination, |_| Interval::top());
+        update_value_children(&mut self.float_interval, destination, |_| {
+            FloatInterval::top()
+        });
+        update_value_children(&mut self.len, destination, |_| Interval::top());
+    }
+
+    pub(super) fn copy_children_from(
+        &mut self,
+        source: &Self,
+        destination: &AccessPath,
+        origin: &AccessPath,
+    ) {
+        update_value_children(&mut self.interval, destination, |suffix| {
+            source
+                .lookup_interval(&origin.join_suffix(suffix))
+                .unwrap_or_else(Interval::top)
+        });
+        update_value_children(&mut self.float_interval, destination, |suffix| {
+            source
+                .lookup_float_interval(&origin.join_suffix(suffix))
+                .unwrap_or_else(FloatInterval::top)
+        });
+        update_value_children(&mut self.len, destination, |suffix| {
+            source
+                .len
+                .get(&origin.join_suffix(suffix))
+                .copied()
+                .unwrap_or_else(Interval::top)
+        });
+        self.integer_bits
+            .extend(source.integer_bits.iter().filter_map(|(path, value)| {
+                Some((
+                    destination.join_suffix(path.value_suffix(origin).filter(|s| !s.is_empty())?),
+                    *value,
+                ))
+            }));
+        self.enum_variants
+            .extend(source.enum_variants.iter().filter_map(|(path, value)| {
+                Some((
+                    destination.join_suffix(path.value_suffix(origin).filter(|s| !s.is_empty())?),
+                    *value,
+                ))
+            }));
+    }
+
+    pub(super) fn clear_index_summaries(
+        &mut self,
+        symbolic: &SymbolicState<'tcx>,
+        place: Place<'tcx>,
+    ) {
+        let Some(path) = symbolic.normalize_place(place) else {
+            return;
+        };
+        let is_summary = |candidate: &AccessPath| {
+            candidate.strip_pattern_prefix(&path).is_some_and(|suffix| {
+                suffix.contains(&mirsa_framework::access_path::AccessPathElem::Index)
+            })
+        };
+        for (candidate, value) in &mut self.interval {
+            if is_summary(candidate) {
+                *value = Interval::empty();
+            }
+        }
+        for (candidate, value) in &mut self.float_interval {
+            if is_summary(candidate) {
+                *value = FloatInterval::bottom();
+            }
+        }
+    }
+
     fn default(debug: bool) -> Self {
         IntervalState {
-            interval: HashMap::new(),
-            float_interval: HashMap::new(),
-            len: HashMap::new(),
-            tracked_len: HashSet::new(),
-            display_places: HashMap::new(),
+            interval: HashMap::new().into(),
+            integer_bits: HashMap::new().into(),
+            enum_variants: HashMap::new().into(),
+            float_interval: HashMap::new().into(),
+            len: HashMap::new().into(),
+            tracked_len: HashSet::new().into(),
+            display_places: HashMap::new().into(),
             debug,
         }
     }
@@ -99,11 +307,13 @@ impl<'tcx> IntervalState<'tcx> {
         }
 
         IntervalState {
-            interval,
-            float_interval,
-            len,
-            tracked_len,
-            display_places,
+            interval: interval.into(),
+            integer_bits: HashMap::new().into(),
+            enum_variants: HashMap::new().into(),
+            float_interval: float_interval.into(),
+            len: len.into(),
+            tracked_len: tracked_len.into(),
+            display_places: display_places.into(),
             debug,
         }
     }
@@ -215,7 +425,7 @@ impl<'tcx> IntervalState<'tcx> {
             if self.interval.contains_key(&path) && self.interval.get(&path).copied() != Some(value)
             {
                 self.interval.insert(path.clone(), value);
-                self.display_places.entry(path).or_insert(place);
+                self.display_places.insert_if_absent(path, place);
             }
             return value;
         }
@@ -234,12 +444,25 @@ impl<'tcx> IntervalState<'tcx> {
             return;
         };
         let path = symbolic.normalize_path(&path);
+        self.set_interval_path(path, place, interval);
+    }
+
+    pub(super) fn set_variant_path(&mut self, path: AccessPath, variant: usize) {
+        self.enum_variants.insert(path, variant);
+    }
+
+    pub(super) fn set_interval_path(
+        &mut self,
+        path: AccessPath,
+        place: Place<'tcx>,
+        interval: Interval,
+    ) {
         if !self.interval.contains_key(&path) {
             self.debug(format_args!("untracked interval write {path}; ignored"));
             return;
         }
         self.interval.insert(path.clone(), interval);
-        self.display_places.entry(path).or_insert(place);
+        self.display_places.insert_if_absent(path, place);
     }
 
     pub fn join_interval_resolved(
@@ -260,7 +483,7 @@ impl<'tcx> IntervalState<'tcx> {
         };
         let value = join(&old, &interval);
         self.interval.insert(path.clone(), value);
-        self.display_places.entry(path).or_insert(place);
+        self.display_places.insert_if_absent(path, place);
     }
 
     pub fn tracked_float_interval_resolved(
@@ -285,8 +508,8 @@ impl<'tcx> IntervalState<'tcx> {
             if self.float_interval.contains_key(&path)
                 && self.float_interval.get(&path).copied() != Some(value)
             {
-                self.float_interval.insert(path.clone(), value);
-                self.display_places.entry(path).or_insert(place);
+                (*self.float_interval).insert(path.clone(), value);
+                self.display_places.insert_if_absent(path, place);
             }
             return value;
         }
@@ -313,8 +536,10 @@ impl<'tcx> IntervalState<'tcx> {
             ));
             return;
         }
-        self.float_interval.insert(path.clone(), interval);
-        self.display_places.entry(path).or_insert(place);
+        // Numeric equality identifies signed zeros; mutable access conservatively
+        // invalidates reduction caches even for such representation changes.
+        (*self.float_interval).insert(path.clone(), interval);
+        self.display_places.insert_if_absent(path, place);
     }
 
     pub fn join_float_interval_resolved(
@@ -334,8 +559,15 @@ impl<'tcx> IntervalState<'tcx> {
             return;
         };
         let value = join_float(&old, &interval);
-        self.float_interval.insert(path.clone(), value);
-        self.display_places.entry(path).or_insert(place);
+        (*self.float_interval).insert(path.clone(), value);
+        self.display_places.insert_if_absent(path, place);
+    }
+
+    pub fn length_places(&self) -> Vec<Place<'tcx>> {
+        self.tracked_len
+            .iter()
+            .filter_map(|path| self.display_places.get(path).copied())
+            .collect()
     }
 
     pub fn get_len(&self, place: &Place<'tcx>) -> Option<Interval> {
@@ -344,6 +576,14 @@ impl<'tcx> IntervalState<'tcx> {
             .get(&path)
             .copied()
             .filter(|value| !value.is_empty() && *value != Interval::top())
+    }
+
+    pub fn tracked_len_resolved(
+        &self,
+        symbolic: &SymbolicState<'tcx>,
+        place: Place<'tcx>,
+    ) -> Option<Interval> {
+        self.len.get(&symbolic.normalize_place(place)?).copied()
     }
 
     pub fn read_len_resolved_or_top(
@@ -377,7 +617,7 @@ impl<'tcx> IntervalState<'tcx> {
             return;
         }
         self.len.insert(path.clone(), len);
-        self.display_places.entry(path).or_insert(place);
+        self.display_places.insert_if_absent(path, place);
     }
 
     pub fn clear_len_resolved(&mut self, symbolic: &SymbolicState<'tcx>, place: &Place<'tcx>) {
@@ -426,11 +666,11 @@ impl<'tcx> IntervalState<'tcx> {
         let exact = self.interval.get(path).copied();
         let mut value = exact;
 
-        for (candidate, candidate_value) in &self.interval {
-            if candidate == path {
-                continue;
-            }
-            if path.matches_pattern(candidate) {
+        let Some(patterns) = path.matching_patterns() else {
+            return Some(Interval::top());
+        };
+        for candidate in patterns.into_iter().skip(1) {
+            if let Some(candidate_value) = self.interval.get(&candidate) {
                 value = Some(join(
                     &value.unwrap_or_else(Interval::empty),
                     candidate_value,
@@ -448,11 +688,11 @@ impl<'tcx> IntervalState<'tcx> {
         let exact = self.float_interval.get(path).copied();
         let mut value = exact;
 
-        for (candidate, candidate_value) in &self.float_interval {
-            if candidate == path {
-                continue;
-            }
-            if path.matches_pattern(candidate) {
+        let Some(patterns) = path.matching_patterns() else {
+            return Some(FloatInterval::top());
+        };
+        for candidate in patterns.into_iter().skip(1) {
+            if let Some(candidate_value) = self.float_interval.get(&candidate) {
                 value = Some(join_float(
                     &value.unwrap_or_else(FloatInterval::bottom),
                     candidate_value,
@@ -493,7 +733,19 @@ pub fn join_state<'tcx>(a: &IntervalState<'tcx>, b: &IntervalState<'tcx>) -> Int
         let ib = b.len.get(k).copied().unwrap_or_else(Interval::top);
         out.len.insert(k.clone(), join(&ia, &ib));
     }
-    out.display_places = join_display_places(&a.display_places, &b.display_places);
+    out.integer_bits = a
+        .integer_bits
+        .iter()
+        .filter(|(path, value)| b.integer_bits.get(*path) == Some(*value))
+        .map(|(path, value)| (path.clone(), *value))
+        .collect();
+    out.enum_variants = a
+        .enum_variants
+        .iter()
+        .filter(|(path, value)| b.enum_variants.get(*path) == Some(*value))
+        .map(|(path, value)| (path.clone(), *value))
+        .collect();
+    out.display_places = join_display_places(&a.display_places, &b.display_places).into();
     out
 }
 
@@ -524,6 +776,32 @@ pub fn widen_state<'tcx>(a: &IntervalState<'tcx>, b: &IntervalState<'tcx>) -> In
         let ib = b.len.get(k).copied().unwrap_or_else(Interval::top);
         out.len.insert(k.clone(), widen(&ia, &ib));
     }
-    out.display_places = join_display_places(&a.display_places, &b.display_places);
+    out.integer_bits = a
+        .integer_bits
+        .iter()
+        .filter(|(path, value)| b.integer_bits.get(*path) == Some(*value))
+        .map(|(path, value)| (path.clone(), *value))
+        .collect();
+    out.enum_variants = a
+        .enum_variants
+        .iter()
+        .filter(|(path, value)| b.enum_variants.get(*path) == Some(*value))
+        .map(|(path, value)| (path.clone(), *value))
+        .collect();
+    out.display_places = join_display_places(&a.display_places, &b.display_places).into();
     out
+}
+
+impl<'tcx> IntervalState<'tcx> {
+    pub fn revision(&self) -> [Revision; 7] {
+        [
+            self.interval.revision(),
+            self.integer_bits.revision(),
+            self.enum_variants.revision(),
+            self.float_interval.revision(),
+            self.len.revision(),
+            self.tracked_len.revision(),
+            self.display_places.revision(),
+        ]
+    }
 }
