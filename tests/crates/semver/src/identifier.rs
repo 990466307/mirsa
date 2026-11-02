@@ -116,6 +116,7 @@ impl Identifier {
                 unsafe { ptr::copy_nonoverlapping(string.as_ptr(), bytes.as_mut_ptr(), len) };
                 // SAFETY: the head field is nonzero because the input string
                 // was at least 1 byte of ASCII and did not contain \0.
+                #[mirsa::check(bytes[0] != 0)]
                 unsafe { mem::transmute::<[u8; mem::size_of::<Identifier>()], Identifier>(bytes) }
             }
             9..=0xff_ffff_ffff_ffff => {
@@ -138,8 +139,10 @@ impl Identifier {
                 }
                 // SAFETY: align is not zero, align is a power of two, and
                 // rounding size up to align does not overflow isize::MAX.
+                #[mirsa::check(align != 0 && (align & (align - 1)) == 0)]
                 let layout = unsafe { Layout::from_size_align_unchecked(size, align) };
                 // SAFETY: layout's size is nonzero.
+                #[mirsa::check(size != 0)]
                 let ptr = unsafe { alloc(layout) };
                 if ptr.is_null() {
                     handle_alloc_error(layout);
@@ -295,6 +298,7 @@ fn ptr_to_repr(original: *mut u8) -> NonNull<u8> {
 
     // SAFETY: the most significant bit of repr is known to be set, so the value
     // is not zero.
+    #[mirsa::check(!is_null(modified))]
     unsafe { NonNull::new_unchecked(modified) }
 }
 
@@ -394,10 +398,12 @@ unsafe fn decode_len(ptr: *const u8) -> NonZeroUsize {
                 // SAFETY: varint continues while there are bytes having the
                 // most significant bit set, i.e. until we start hitting the
                 // ASCII string content with msb unset.
+                #[mirsa::check(offset(ptr) + 1 <= extent(ptr))]
                 let byte = unsafe { *ptr };
                 if byte < 0x80 {
                     // SAFETY: the string length is known to be 128 bytes or
                     // longer.
+                    #[mirsa::check(len != 0)]
                     return unsafe { NonZeroUsize::new_unchecked(len) };
                 }
                 // SAFETY: still in bounds of the same allocation.
@@ -415,6 +421,9 @@ unsafe fn ptr_as_str(repr: &NonNull<u8>) -> &str {
     let ptr = repr_to_ptr(*repr);
     let len = unsafe { decode_len(ptr) };
     let header = bytes_for_varint(len);
+    // SAFETY: the varint header is part of the same heap allocation as the
+    // string contents, so advancing past it stays in bounds.
+    #[mirsa::check(offset(ptr) + math(header) <= extent(ptr))]
     let slice = unsafe { slice::from_raw_parts(ptr.add(header), len.get()) };
     // SAFETY: all identifier contents are ASCII bytes, which are always valid
     // UTF-8.
