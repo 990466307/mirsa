@@ -1,0 +1,17 @@
+# dsh-mirsa bundle: one MCP connection + the bundled skill provider.
+# MIRSA_ROOT points at the MIRSA checkout whose scripts/start-mcp.sh launches
+# the worker; it defaults to ~/mirsa so the package carries no absolute path.
+- insert:
+    - id: mcp-mirsa
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: mirsa
+        transport: stdio
+        command: /bin/bash
+        args:
+          - '-c'
+          - 'exec "${MIRSA_ROOT:-$HOME/mirsa}/scripts/start-mcp.sh"'
+        toolCallTimeoutMs: 120000
+
+    - id: mirsa-ui
+      name: 'dsh-mirsa'

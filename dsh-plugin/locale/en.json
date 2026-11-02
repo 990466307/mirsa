@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "MIRSA static analysis",
+    "description": "Connects the local MIRSA analyzer (mirsa_variables / mirsa_query) and ships the mirsa-unsafe-check workflow."
+  }
+}

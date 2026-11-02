@@ -1,0 +1,78 @@
+---
+name: mirsa-unsafe-check
+description: 用 MIRSA 检查 Rust 源码里的安全性质：把性质写成源码里的 #[mirsa::check(...)] 属性，再用 mirsa_query 一次编译拿到全部结论和证据。
+---
+
+# MIRSA：注解驱动地检查 unsafe 前置条件
+
+性质写在源码属性里，MIRSA 编译一次、逐条验证，并把证据放在结论里返回。
+
+## 流程
+
+固定顺序：确定文件／行范围 → 检查范围内的 unsafe 操作与调用 → 复用已有 check、补齐缺少的待查性质 → 验证磁盘文件 → 右栏显示结果 → 一行总结。不额外生成演示副本、分析文档、聊天源码块或重复执行已成功的查询。
+
+1. **确定目标并读取真实文件**：优先采用用户显式指定的文件引用、路径和行范围；其次才采用客户端明确传入的当前文件上下文。仅仅打开右侧预览不意味着模型已收到路径。没有可确定的目标时询问文件，不猜测当前打开的是哪个，也不沿用其他会话的文件。
+   用读文件工具读取目标文件及所属 Cargo.toml，确定 crate 入口、edition 和 feature。
+2. **检查目标范围并补充缺少的 check 注解**：指定文件时检查该文件中的 unsafe 操作和 unsafe 函数调用；指定行范围时只处理范围内的目标，必要时读取外围函数和被调用 API 的定义／安全契约以理解前置条件，不扩大修改范围。这里包括普通函数内 unsafe 块中的调用，不仅是声明为 `unsafe fn` 的函数。
+   已有 `#[mirsa::check(...)]` 的性质直接复用并查询，不重复添加；普通 `SAFETY` 注释或 `#[mirsa::facts(...)]` 不等于已有 check。已有 check 也不代表覆盖了全部前置条件，只补充尚未覆盖且能表达的性质。
+   没有 check 时，先根据 API 的安全契约确定待查询性质，再参考项目 `crates/dsl/grammar.ebnf`（或当前部署提供的等价 DSL 文档）确认合法写法。grammar 只规定表达语法，不定义 API 的安全前置条件。无法取得语法依据时不要猜造 DSL。
+   **实际写入工作区文件**：用现有文件编辑工具（如 `str_replace_editor`）修改用户指定的真实文件，不以聊天代码块或临时源码副本代替。只插入注解，保留业务逻辑与用户已有修改；已经存在的相同注解不重复添加。注解写在语句正上方：
+   ```rust
+   #[mirsa::check(index < len(table))]
+   unsafe { *table.get_unchecked(index) }
+   ```
+   变量名直接用源码里的名字，不需要 bindings，也不需要 `$`。
+
+   **不要为了证据加 `#[mirsa::facts(...)]`**：check 的结论里已经带证据
+   （抽象解释给 facts，SMT 给 `¬P = unsat, P = sat` 与用到的假设）。
+   只有当用户明确问「某个变量在这一点是什么抽象状态 / 范围 / 是否为空」时，
+   才单独加 `#[mirsa::facts(x)]`。
+   写入前确认类型和性质能被 DSL 表达。不支持的泛型、内存模型或前置条件应明确说明限制；不得用较弱性质的 proved 冒充整个 unsafe 调用已验证。
+3. **重新读取，再分析磁盘文件**：编辑成功后重新读取文件，确认注解确实写入，并按新行号调用 `mirsa_query(file="…/x.rs")`。
+   对工作区文件任务必须使用 `file=`；只有用户明确要求验证独立代码片段时才使用 `code=`。编辑失败时停止，不得改用内存代码生成成功结果。
+   一次编译返回文件里所有注解的结果；默认摘要，需要原始报告时传 `verbose=true`。
+   只关心某个函数时传行范围：`mirsa_query(file="…/x.rs", lines="10-20")`，行号使用插入注解后的源码位置。
+   工作区 crate 的子模块不能当独立 crate 编译：用 `file` 指定目标文件，`crate_root` 指定入口，
+   例如 `mirsa_query(file="…/src/identifier.rs", crate_root="…/src/lib.rs", lines="122", rustc_args=["--edition=2018", "--cfg", "feature=\"std\""])`。
+   此时编译整个 crate，但只返回目标文件的指定行，卡片源码也对应目标文件。
+   根据 Cargo.toml 显式提供 edition 和所需 feature 的 rustc 参数；工具不会自动运行 Cargo。
+   传 `src/lib.rs` 这类 crate 入口会编译整个 crate，一次返回所有模块的注解结果。
+4. **读结果**：`reports[]` 每条是
+   ```json
+   {"location":{"source":"…","line":6,"column":5},
+    "query":"index < len(table)",
+    "conclusion":{"status":"violated",
+      "path_verdicts":[{"status":"violated","source":"Abstract",
+        "evidence":{"method":"abstract","notes":["index = 5","len(table) = 3"]}}]}}
+   ```
+   - `conclusion.status`：`proved` / `violated` / `maybe_violated` / `unreachable`
+   - `evidence.notes`：结论的依据
+   - `unknown`（或 `maybe_violated`）时可能有 `hint`，说明下一步
+   - `reports` 为空只表示本次没有返回匹配的查询结果，**不代表文件安全**；检查目标和注解行号，不补造结论。
+5. **展示与总结**：右栏插件根据真实工具结果在对应行显示颜色和 ✅／❌／❔，点击展开证据；这些是预览标记，不把图标或证明文字写回 Rust 源码。聊天仅输出一行计数，存在未覆盖的前置条件或失败时必须简短说明。
+
+## 结论怎么说
+
+| status | 可以说 |
+|---|---|
+| `proved` | 这条性质成立 |
+| `violated` | 存在必然违反的路径 |
+| `maybe_violated` | 可能有违反，模型未能定论 |
+| `unreachable` | 查询点不可达（不是证明） |
+
+一条性质成立 ≠ 整个函数安全；分析只看函数体，不含调用方实参。
+
+## 出错时
+
+工具报错不是性质结论：
+
+- `compilation` → 检查 crate 入口、edition、feature 和注解是否合法；不能为了得到 proved 擅自改写业务逻辑
+- `binding` → 注解位置/变量名问题（错误里会列出该处可见变量）
+- `query` → DSL 写错，错误里带行列与 caret
+- `input` → 参数问题（文件不存在、file 与 code 同时给）
+
+## 输出格式（固定）
+
+回复**只有一行**，按性质计数，例如 `2 条性质已证明，1 条确定违反；另 1 处调用因泛型限制未覆盖`。不要列文件路径、行号、表格或逐条证据——右侧栏打开该文件时会显示源码与结论标记。只有工具实际返回结论后才能报告 proved 或 violated。
+
+结果从当前会话已加载的工具记录恢复，按绝对路径和完整源码快照匹配；打开对应文件时，右侧栏显示行内标记。文件内容变化后旧结果不再有效，不承诺跨会话恢复。不得宣称注解已写入磁盘，除非确实修改了文件。

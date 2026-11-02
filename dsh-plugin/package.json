@@ -1,0 +1,48 @@
+{
+  "name": "dsh-mirsa",
+  "version": "0.1.4",
+  "description": "DSH plugin: run MIRSA on Rust source annotations and render verdicts with evidence",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/990466307/mirsa.git"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "bin/**",
+    "vendor/**",
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "skills/**",
+    "locale/*.json",
+    "icon.svg",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-sidebar-right",
+        "@deepseek-ai/dsh-client-ui-sidebar-documentpreview"
+      ]
+    }
+  },
+  "bin": {
+    "dsh-mirsa": "./bin/mirsa.mjs"
+  },
+  "scripts": {
+    "prepack": "bash scripts/vendor.sh"
+  }
+}

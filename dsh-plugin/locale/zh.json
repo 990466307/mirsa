@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "MIRSA 静态分析",
+    "description": "连接本机 MIRSA 分析器，提供 mirsa_variables / mirsa_query 两个工具，并附带 mirsa-unsafe-check 工作流。"
+  }
+}
