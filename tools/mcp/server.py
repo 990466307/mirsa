@@ -42,7 +42,8 @@ mcp = AttributeServer(
         "默认返回摘要；仅在需要完整原始报告时传 verbose=true。"
         "reports 为空只表示没有启用的查询属性，不表示整个文件安全。"
         "result=true 表示所查询的性质已证明，definite_violation=true 表示模型内确定违反；"
-        "其他正常状态为 maybe_violated 或 unreachable，查看逐路径 evidence 和 notes。"
+        "其他正常状态为 maybe_violated 或 unreachable。maybe_violated/unknown 是正常终态，不是错误。"
+        "默认成功查询后直接简短总结，不因 maybe 自动追查原因、追加查询或改写性质；仅用户明确要求时继续诊断。"
         "单条性质成立不代表整个 unsafe 调用安全，候选 SMT 模型不保证对应真实执行。"
         "分析 crate 内某个文件时，用 file 指定目标文件、crate_root 指定 src/lib.rs 等编译入口。"
         "lines 限定目标文件插入属性后的行范围；返回的源码与位置都对应目标文件。"
@@ -475,6 +476,7 @@ async def mirsa_query(
     """分析源码中全部 MIRSA 查询属性，返回每条属性的位置、结论和逐路径证据。
 
     crate_root 指定编译入口，file 指定目标文件；lines 使用标注后的行号。
+    maybe_violated/unknown 是正常终态，默认返回后直接总结；仅用户明确要求时继续诊断。
     """
     source, file_arg, label = resolve_source(file, code)
     window = parse_line_range(lines)
