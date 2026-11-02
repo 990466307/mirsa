@@ -25,10 +25,7 @@ impl<'tcx> Candidate<'tcx> {
         bindings: &Bindings<'tcx>,
     ) -> Result<Self, Vec<Diagnostic>> {
         let error = |message: &str| {
-            vec![Diagnostic {
-                span: 0..expression.len(),
-                message: message.into(),
-            }]
+            vec![Diagnostic::new(0..expression.len(), message).with_source(expression)]
         };
         if block.index() >= body.basic_blocks.len() || body.basic_blocks[block].is_cleanup {
             return Err(error("invalid guidance block"));
@@ -179,7 +176,11 @@ impl<'tcx> Guidance<'tcx> {
                 config,
             };
             let before = Instant::now();
-            let proof = view.prove(&candidate.predicate);
+            let Ok(proof) = view.prove(&candidate.predicate, &super::Bindings::new()) else {
+                // Failed optional guidance contributes no fact or property verdict.
+                self.omitted.set(self.omitted.get() + 1);
+                continue;
+            };
             let accepted = proof.verdict == Verdict::T && !proof.unreachable;
             // The fact is attached only to the state on which it was proved.
             // Ordinary intersection at joins therefore requires all incoming states.

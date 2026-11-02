@@ -1,4 +1,5 @@
 use crate::*;
+use chumsky::error::{RichPattern, RichReason};
 use chumsky::prelude::*;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -6,6 +7,14 @@ enum Token {
     Name(String),
     Number(String),
     Symbol(String),
+}
+
+impl std::fmt::Display for Token {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Name(s) | Self::Number(s) | Self::Symbol(s) => f.write_str(s),
+        }
+    }
 }
 
 type Error<'a> = extra::Err<Rich<'a, Token>>;
@@ -31,7 +40,7 @@ fn valid_number(text: &str) -> bool {
             || ((suffix.starts_with('i') || suffix.starts_with('u')) && is_scalar(suffix)))
 }
 
-fn expression<'a>() -> impl Parser<'a, &'a [Token], Expr, Error<'a>> + Clone {
+fn expression<'a>(bare_names: bool) -> impl Parser<'a, &'a [Token], Expr, Error<'a>> + Clone {
     let symbol = |s: &str| just(Token::Symbol(s.to_owned()));
     let keyword = |s: &str| just(Token::Name(s.to_owned()));
     let name = select! { Token::Name(n) if is_name(&n) => n };
@@ -47,9 +56,14 @@ fn expression<'a>() -> impl Parser<'a, &'a [Token], Expr, Error<'a>> + Clone {
             binding: false,
         }));
     recursive(|expr| {
-        let builtin = select! { Token::Name(n) if Builtin::named(&n).is_some() => Builtin::named(&n).unwrap() }
+        let builtin = select! { Token::Name(n) if Builtin::named(&n).is_some() => (Builtin::named(&n).unwrap(), n) }
             .then(expr.clone().separated_by(symbol(",")).collect::<Vec<_>>().delimited_by(symbol("("), symbol(")")))
-            .try_map(|(op, args), span| if args.len() == op.arity() { Ok(ExprKind::Builtin(op, args)) } else { Err(Rich::custom(span, "wrong builtin argument count")) });
+            .validate(|((op, name), args), e, emitter| {
+                if args.len() != op.arity() {
+                    emitter.emit(Rich::custom(e.span(), format!("`{name}` 需要 {} 个参数", op.arity())));
+                }
+                ExprKind::Builtin(op, args)
+            });
         let layout = keyword("size_of")
             .to(false)
             .or(keyword("align_of").to(true))
@@ -65,6 +79,13 @@ fn expression<'a>() -> impl Parser<'a, &'a [Token], Expr, Error<'a>> + Clone {
             keyword("false").to(ExprKind::Bool(false)),
             builtin,
             layout,
+            name.clone().try_map(move |n, span| {
+                if bare_names {
+                    Ok(ExprKind::Binding(n))
+                } else {
+                    Err(Rich::custom(span, "外部 DSL 变量缺少 $ 前缀"))
+                }
+            }),
         ))
         .map_with(|kind, e| Expr {
             kind,
@@ -202,7 +223,7 @@ fn grammar<'a>() -> impl Parser<'a, &'a [Token], Statement, Error<'a>> {
     let symbol = |s: &str| just(Token::Symbol(s.to_owned()));
     let keyword = |s: &str| just(Token::Name(s.to_owned()));
     let name = select! { Token::Name(n) if is_name(&n) => n };
-    let expr = expression();
+    let expr = expression(false);
     let request = keyword("facts")
         .ignore_then(expr.clone().delimited_by(symbol("("), symbol(")")))
         .map(|expression| (RequestKind::Facts, expression))
@@ -235,10 +256,10 @@ fn binary<'a>(
 
 fn tokenize(source: &str) -> Result<Tokens, Vec<Diagnostic>> {
     if source.len() > 65536 {
-        return Err(vec![Diagnostic {
-            span: 0..source.len(),
-            message: "document exceeds 64 KiB".into(),
-        }]);
+        return Err(vec![Diagnostic::new(
+            0..source.len(),
+            "DSL 长度超过 64 KiB",
+        )]);
     }
     let digits = one_of::<_, &str, extra::Err<Rich<char>>>('0'..='9')
         .repeated()
@@ -267,7 +288,7 @@ fn tokenize(source: &str) -> Result<Tokens, Vec<Diagnostic>> {
         if valid_number(s) {
             Ok(Token::Number(s.to_owned()))
         } else {
-            Err(Rich::custom(span, "invalid numeric literal or suffix"))
+            Err(Rich::custom(span, "数值字面量或类型后缀不正确"))
         }
     });
     let ident = one_of('a'..='z')
@@ -317,17 +338,19 @@ fn tokenize(source: &str) -> Result<Tokens, Vec<Diagnostic>> {
         .map_err(|errors: Vec<Rich<char>>| {
             errors
                 .into_iter()
-                .map(|e| Diagnostic {
-                    span: e.span().into_range(),
-                    message: e.to_string(),
+                .map(|e| {
+                    let message = match e.reason() {
+                        RichReason::Custom(message) => message.clone(),
+                        _ => e.found().map_or("表达式不完整".into(), |c| {
+                            format!("不支持的字符 `{c}`")
+                        }),
+                    };
+                    Diagnostic::new(e.span().into_range(), message).with_source(source)
                 })
                 .collect::<Vec<_>>()
         })?;
     if tokens.len() > 8192 {
-        return Err(vec![Diagnostic {
-            span: 0..source.len(),
-            message: "too many tokens".into(),
-        }]);
+        return Err(vec![Diagnostic::new(0..source.len(), "表达式过长")]);
     }
     let mut depth = 0usize;
     for (token, span) in &tokens {
@@ -335,10 +358,9 @@ fn tokenize(source: &str) -> Result<Tokens, Vec<Diagnostic>> {
             Token::Symbol(s) if matches!(s.as_str(), "(" | "[") => {
                 depth += 1;
                 if depth > 64 {
-                    return Err(vec![Diagnostic {
-                        span: span.clone(),
-                        message: "nesting exceeds 64".into(),
-                    }]);
+                    return Err(vec![
+                        Diagnostic::new(span.clone(), "括号嵌套超过 64 层").with_source(source),
+                    ]);
                 }
             }
             Token::Symbol(s) if matches!(s.as_str(), ")" | "]") => depth = depth.saturating_sub(1),
@@ -359,7 +381,48 @@ struct Tokens {
 }
 
 impl Tokens {
+    fn diagnostics(&self, errors: Vec<Rich<'_, Token>>, source: &str) -> Vec<Diagnostic> {
+        errors
+            .into_iter()
+            .map(|error| {
+                let message = match error.reason() {
+                    RichReason::Custom(message) => message.clone(),
+                    _ => {
+                        let mut message =
+                            error.found().map_or("表达式不完整".into(), |token| {
+                                format!("此处不应出现 `{token}`")
+                            });
+                        let expected = error
+                            .expected()
+                            .take(3)
+                            .map(|pattern| match pattern {
+                                RichPattern::Token(token) => format!("`{}`", &**token),
+                                RichPattern::Label(label) => label.to_string(),
+                                RichPattern::Identifier(name) => name.clone(),
+                                RichPattern::EndOfInput => "表达式结束".into(),
+                                _ => "有效表达式".into(),
+                            })
+                            .collect::<Vec<_>>();
+                        if !expected.is_empty() {
+                            message.push_str(&format!("，预期 {}", expected.join("、")));
+                        }
+                        message
+                    }
+                };
+                Diagnostic::new(self.byte_span(error.span().into_range()), message)
+                    .with_source(source)
+            })
+            .collect()
+    }
+
     fn byte_span(&self, span: Span) -> Span {
+        if span.is_empty() {
+            let start = self
+                .spans
+                .get(span.start)
+                .map_or(self.source_len, |s| s.start);
+            return start..start;
+        }
         self.spans
             .get(span.start)
             .map_or(self.source_len, |s| s.start)
@@ -370,24 +433,14 @@ impl Tokens {
                 .map_or(self.source_len, |s| s.end)
     }
 
-    fn diagnostics(&self, errors: Vec<Rich<'_, Token>>) -> Vec<Diagnostic> {
-        errors
-            .into_iter()
-            .map(|e| Diagnostic {
-                span: self.byte_span(e.span().into_range()),
-                message: format!("invalid DSL syntax: {:?}", e.reason()),
-            })
-            .collect()
-    }
-
     fn expression_spans(&self, expr: &mut Expr) -> Result<(), Vec<Diagnostic>> {
         if spans(expr, &|s| self.byte_span(s), 0) {
             Ok(())
         } else {
-            Err(vec![Diagnostic {
-                span: expr.span.clone(),
-                message: "expression depth exceeds 64".into(),
-            }])
+            Err(vec![Diagnostic::new(
+                expr.span.clone(),
+                "表达式嵌套超过 64 层",
+            )])
         }
     }
 }
@@ -414,7 +467,7 @@ pub fn parse(source: &str) -> Result<Document, Vec<Diagnostic>> {
     let mut statement = grammar()
         .parse(tokens.raw.as_slice())
         .into_result()
-        .map_err(|errors| tokens.diagnostics(errors))?;
+        .map_err(|errors| tokens.diagnostics(errors, source))?;
     statement.span = tokens.byte_span(statement.span.clone());
     tokens.expression_spans(&mut statement.expression)?;
     Ok(Document {
@@ -425,11 +478,36 @@ pub fn parse(source: &str) -> Result<Document, Vec<Diagnostic>> {
 
 pub fn parse_expression(source: &str) -> Result<Expr, Vec<Diagnostic>> {
     let tokens = tokenize(source)?;
-    let mut expr = expression()
+    let mut expr = expression(false)
         .then_ignore(end())
         .parse(tokens.raw.as_slice())
         .into_result()
-        .map_err(|errors| tokens.diagnostics(errors))?;
+        .map_err(|errors| tokens.diagnostics(errors, source))?;
     tokens.expression_spans(&mut expr)?;
     Ok(expr)
+}
+
+/// Parse an expression from a source tool attribute. Call syntax selects builtins;
+/// a bare name selects a local variable, even when it has a builtin's name.
+pub fn parse_annotation(
+    source: &str,
+    kind: RequestKind,
+    location: &str,
+) -> Result<Document, Vec<Diagnostic>> {
+    let tokens = tokenize(source)?;
+    let mut expr = expression(true)
+        .then_ignore(end())
+        .parse(tokens.raw.as_slice())
+        .into_result()
+        .map_err(|errors| tokens.diagnostics(errors, source))?;
+    tokens.expression_spans(&mut expr)?;
+    Ok(Document {
+        source: source.to_owned(),
+        statement: Statement {
+            kind,
+            location: location.into(),
+            expression: expr,
+            span: 0..source.len(),
+        },
+    })
 }

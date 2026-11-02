@@ -16,11 +16,12 @@ resolver = "2"
 name = "mirsa"
 version = "0.4.0"
 edition = "2024"
+autotests = false
 
 description = "rust mir static analysis"
 license = "MIT"
 repository = "https://github.com/990466307/mirsa"
-include = ["src/**", "docs/**", "examples/query_dsl.rs", "examples/inputs/query_target.rs", "Cargo.toml", "README.md", "rust-toolchain.toml"]
+include = ["src/**", "docs/**", "Cargo.toml", "README.md", "rust-toolchain.toml"]
 
 [dependencies]
 mirsa_dsl = { package = "mirsa-dsl", path = "crates/dsl", version = "0.4.0" }
@@ -33,6 +34,10 @@ mirsa_relations = { package = "mirsa-relations", path = "crates/relations", vers
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
 
+[dev-dependencies]
+mirsa_solver = { package = "mirsa-solver", path = "crates/solver", version = "0.4.0" }
+serde_json = "1"
+
 [features]
 cli = ["dep:serde", "dep:serde_json"]
 z3 = ["mirsa_analysis/z3"]
@@ -44,3 +49,59 @@ required-features = ["cli"]
 
 [package.metadata.rust-analyzer]
 rustc_private = true
+
+[[test]]
+name = "annotations"
+path = "tests/files/annotations.rs"
+
+[[test]]
+name = "input_api"
+path = "tests/files/input_api.rs"
+
+[[test]]
+name = "query_facts"
+path = "tests/files/query_facts.rs"
+
+[[test]]
+name = "query_guidance"
+path = "tests/files/query_guidance.rs"
+
+[[test]]
+name = "query_literals"
+path = "tests/files/query_literals.rs"
+
+[[test]]
+name = "query_memory_writes"
+path = "tests/files/query_memory_writes.rs"
+
+[[test]]
+name = "query_paths"
+path = "tests/files/query_paths.rs"
+
+[[test]]
+name = "query_pointer_casts"
+path = "tests/files/query_pointer_casts.rs"
+
+[[test]]
+name = "query_range_iterator"
+path = "tests/files/query_range_iterator.rs"
+
+[[test]]
+name = "query_reference_validity"
+path = "tests/files/query_reference_validity.rs"
+
+[[test]]
+name = "query_remainder"
+path = "tests/files/query_remainder.rs"
+
+[[test]]
+name = "query_slice"
+path = "tests/files/query_slice.rs"
+
+[[test]]
+name = "symbolic_branches"
+path = "tests/files/symbolic_branches.rs"
+
+[[test]]
+name = "crate_modules"
+path = "tests/crates/modules.rs"

@@ -1,7 +1,6 @@
-Document  ::= Statement
-Statement ::= Request "at" Location
-Request   ::= Expr | "facts" "(" Expr ")"
-Location  ::= "'" Name
+(* Public source-attribute syntax. Internal MIR adapters also have a separate
+   document parser with explicit $bindings and at 'location; it is not a source-file entry. *)
+Attribute ::= "#[" "mirsa" "::" ("check" | "facts") "(" Expr ")" "]"
 
 Expr      ::= Imply
 Imply     ::= Or [ "=>" Imply ]
@@ -19,7 +18,7 @@ Cast      ::= Unary { "as" ScalarType }
 Unary     ::= ("!" | "-" | "*") Unary | Postfix
 Postfix   ::= Primary { "." Field | "[" Expr "]" }
 Field     ::= Name | Digits
-Primary   ::= "$" Name | Literal | Builtin | "(" Expr ")"
+Primary   ::= Name | Literal | Builtin | "(" Expr ")"
 
 Builtin   ::= ("math" | "len") "(" Expr ")"
             | ("is_nan" | "is_infinite") "(" Expr ")"
@@ -30,7 +29,7 @@ Builtin   ::= ("math" | "len") "(" Expr ")"
             | "discriminant" "(" Expr ")"
             | ("size_of" | "align_of") "::<" Type ">()"
 
-Type       ::= ScalarType | "$" Name
+Type       ::= ScalarType
 ScalarType ::= IntType | FloatType | "bool" | "char"
 IntType    ::= ("i" | "u") ("8" | "16" | "32" | "64" | "128" | "size")
 FloatType  ::= "f32" | "f64"
@@ -45,3 +44,5 @@ Digit      ::= "0"…"9"
 Digits     ::= Digit { Digit }
 HexDigit   ::= Digit | "a"…"f" | "A"…"F"
 HexDigits  ::= HexDigit { HexDigit }
+
+(* Call syntax selects a known Builtin; a bare Name is a source variable. *)

@@ -1,4 +1,4 @@
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
 pub struct ScalarType {
     pub bits: u32,
     pub signed: bool,
@@ -11,7 +11,7 @@ impl ScalarType {
     };
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub enum BinaryOp {
     Add,
     Sub,
@@ -25,13 +25,13 @@ pub enum BinaryOp {
     Shr,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub enum UnaryOp {
     Neg,
     Not,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub enum Comparison {
     Eq,
     Ne,
@@ -41,7 +41,7 @@ pub enum Comparison {
     Ge,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub enum Term {
     Variable(u32, ScalarType),
     Constant(u128, ScalarType),
@@ -92,7 +92,7 @@ impl Term {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub enum IntTerm {
     Variable(u32),
     Constant(String),
@@ -102,7 +102,7 @@ pub enum IntTerm {
     Bitwise(BinaryOp, Box<IntTerm>, Box<IntTerm>, u32),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub enum FloatTerm {
     FromBits(Term),
     FromInteger(Term, u32),
@@ -138,7 +138,7 @@ impl FloatTerm {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub enum Formula {
     Literal(bool),
     MathCompare(Comparison, IntTerm, IntTerm),

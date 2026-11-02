@@ -1,7 +1,7 @@
 mod display;
-mod expressions;
+pub(super) mod expressions;
 pub mod model;
-mod stored;
+pub(super) mod stored;
 
 use super::value::{self, Eval, Value};
 use super::{
@@ -10,9 +10,9 @@ use super::{
 use crate::reduced_product::CombinedState;
 use expressions::Exporter;
 use mirsa_dsl::Builtin;
-use mirsa_framework::{access_path::AccessPath, forward::DomainState};
+use mirsa_framework::access_path::AccessPath;
 use mirsa_solver::UnknownReason;
-use model::AbstractFact;
+use model::{AbstractFact, PathFacts};
 use std::time::Instant;
 
 const FACT_BUILTINS: &[(&str, Builtin)] = &[
@@ -39,13 +39,30 @@ impl<'tcx> QueryView<'_, 'tcx> {
         bindings: &Bindings<'tcx>,
     ) -> Result<FactOutput, Vec<Diagnostic>> {
         let started = Instant::now();
-        let mut states = self.states.iter().map(|(_, _, state)| state);
-        let mut merged = states.next().map(|first| {
-            states.fold(first.clone(), |left, right| {
-                CombinedState::join(&left, right)
+        let paths = self
+            .states
+            .iter()
+            .map(|(id, merged, state)| {
+                self.facts_for_state(expr, syntax, bindings, *id, *merged, state.clone(), started)
             })
-        });
-        let names = Exporter::new(self.tcx, self.body, merged.as_ref(), bindings);
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(FactOutput {
+            unreachable: paths.is_empty(),
+            paths,
+        })
+    }
+
+    fn facts_for_state(
+        &self,
+        expr: &Expr<'tcx>,
+        syntax: &mirsa_dsl::Expr,
+        bindings: &Bindings<'tcx>,
+        path_id: u32,
+        merged: bool,
+        mut state: CombinedState<'tcx>,
+        started: Instant,
+    ) -> Result<PathFacts, Vec<Diagnostic>> {
+        let names = Exporter::new(self.tcx, self.body, Some(&state), bindings);
         let subject = names.syntax(syntax, &|name| {
             bindings.values.get(name).map(|v| {
                 if let Some(path) = v.place().and_then(AccessPath::from_place) {
@@ -55,21 +72,11 @@ impl<'tcx> QueryView<'_, 'tcx> {
                 }
             })
         })?;
-        let Some(state) = merged.as_mut() else {
-            // No compiler values need resolving for an unreachable result.
-            return Ok(FactOutput {
-                abstract_info: vec![AbstractFact {
-                    subject,
-                    value: FactValue::Unreachable,
-                }],
-                symbolic_info: vec![],
-            });
-        };
         let property = Predicate::Value(expr.clone());
         let within_budget = property.within_budget(self.config.max_nodes);
         let exhausted = || !within_budget || started.elapsed() >= self.config.total_timeout;
         if !exhausted() {
-            value::reduce(self.tcx, self.body, state, &property);
+            value::reduce(self.tcx, self.body, &mut state, &property);
         }
         let mut roots = Vec::new();
         expr.visit_places(&mut |p| {
@@ -81,7 +88,7 @@ impl<'tcx> QueryView<'_, 'tcx> {
         let eval = Eval {
             tcx: self.tcx,
             body: self.body,
-            state,
+            state: &state,
         };
         let (mut abstract_info, symbolic_info) = stored::export(&eval, &roots, &names)?;
         let read = |expr: &Expr<'tcx>| {
@@ -115,14 +122,16 @@ impl<'tcx> QueryView<'_, 'tcx> {
             .map(|(subject, value)| AbstractFact { subject, value })
             .collect::<Vec<_>>();
         abstract_info.sort_by_cached_key(|fact| format!("{:?}", fact.subject));
-        Ok(FactOutput {
+        Ok(PathFacts {
+            path_id,
+            merged,
             abstract_info,
             symbolic_info,
         })
     }
 }
 
-fn fact_value(eval: &Eval<'_, '_>, value: Value) -> FactValue {
+pub(super) fn fact_value(eval: &Eval<'_, '_>, value: Value) -> FactValue {
     match value {
         Value::Integer(a, b) => FactValue::Integer {
             low: a.to_string(),

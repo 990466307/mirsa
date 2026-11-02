@@ -85,10 +85,7 @@ type Result<T> = std::result::Result<T, Diagnostic>;
 
 impl<'tcx> Binder<'_, 'tcx> {
     fn error(&self, e: &dsl::Expr, message: impl Into<String>) -> Diagnostic {
-        Diagnostic {
-            span: e.span.clone(),
-            message: message.into(),
-        }
+        Diagnostic::new(e.span.clone(), message)
     }
     fn scalar(&self, name: &str) -> Ty<'tcx> {
         let t = &self.tcx.types;
@@ -177,11 +174,28 @@ impl<'tcx> Binder<'_, 'tcx> {
     pub fn bind(&self, e: &dsl::Expr, expected: Option<ValueType<'tcx>>) -> Result<Expr<'tcx>> {
         let out = self.lower(e, expected)?;
         if let Some(expected) = expected {
-            self.require(
-                e,
-                value::ty(self.tcx, self.body, &out) == expected,
-                "expression has an incompatible type",
-            )?;
+            let actual = value::ty(self.tcx, self.body, &out);
+            if actual != expected {
+                let describe = |ty: ValueType<'tcx>| match ty {
+                    ValueType::Rust(ty) => ty.to_string(),
+                    ValueType::Math => "数学整数".into(),
+                };
+                let hint = if expected == ValueType::Rust(self.tcx.types.bool) {
+                    "查看变量值请使用 facts 查询。"
+                } else {
+                    "请检查两侧数值的类型。"
+                };
+                return Err(self
+                    .error(
+                        e,
+                        format!(
+                            "表达式类型为 {}，此处需要 {}",
+                            describe(actual),
+                            describe(expected)
+                        ),
+                    )
+                    .with_hint(hint));
+            }
         }
         Ok(out)
     }

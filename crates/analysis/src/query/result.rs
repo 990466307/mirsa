@@ -1,5 +1,39 @@
-use mirsa_solver::{SolveResult, UnknownReason, Verdict as SolverVerdict};
+use mirsa_solver::{SolveResult, Verdict as SolverVerdict};
 use serde::Serialize;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Status {
+    Proved,
+    Violated,
+    MaybeViolated,
+    Unreachable,
+}
+
+impl Status {
+    fn from_flags(proved: bool, violated: bool, unreachable: bool) -> Self {
+        if violated {
+            Self::Violated
+        } else if unreachable {
+            Self::Unreachable
+        } else if proved {
+            Self::Proved
+        } else {
+            Self::MaybeViolated
+        }
+    }
+}
+
+impl std::fmt::Display for Status {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Proved => "proved",
+            Self::Violated => "violated",
+            Self::MaybeViolated => "maybe_violated",
+            Self::Unreachable => "unreachable",
+        })
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub enum Verdict {
@@ -17,12 +51,15 @@ pub enum ProofSource {
 pub struct PathProof {
     pub path_id: u32,
     pub merged: bool,
+    pub status: Status,
     pub verdict: Verdict,
     pub definite_violation: bool,
     pub unreachable: bool,
     pub source: ProofSource,
-    pub reason: Option<UnknownReason>,
+    /// Supplemental diagnostics; the property conclusion is explained by evidence.
+    pub notes: Vec<String>,
     pub candidate: Option<String>,
+    pub evidence: super::Evidence,
 }
 
 impl PathProof {
@@ -35,6 +72,11 @@ impl PathProof {
         Self {
             path_id,
             merged,
+            status: Status::from_flags(
+                result.verdict == SolverVerdict::Proven,
+                result.verdict == SolverVerdict::Refuted,
+                result.verdict == SolverVerdict::Unreachable,
+            ),
             verdict: match result.verdict {
                 SolverVerdict::Proven => Verdict::T,
                 _ => Verdict::F,
@@ -42,18 +84,24 @@ impl PathProof {
             definite_violation: result.verdict == SolverVerdict::Refuted,
             unreachable: result.verdict == SolverVerdict::Unreachable,
             source,
-            reason: result.reason,
+            notes: Vec::new(),
             candidate: result.candidate,
+            evidence: super::Evidence {
+                expressions: None,
+                abstract_evaluation: None,
+                context: Vec::new(),
+                smt: None,
+            },
         }
     }
 }
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Proof {
+    pub status: Status,
     pub verdict: Verdict,
     pub definite_violation: bool,
     pub unreachable: bool,
-    pub reason: Option<UnknownReason>,
     pub paths: Vec<PathProof>,
 }
 
@@ -67,16 +115,11 @@ impl Proof {
         } else {
             Verdict::F
         };
-        let reason = (verdict == Verdict::F && !definite_violation && !unreachable).then(|| {
-            feasible()
-                .find_map(|path| path.reason)
-                .unwrap_or(UnknownReason::InsufficientInformation)
-        });
         Self {
+            status: Status::from_flags(verdict == Verdict::T, definite_violation, unreachable),
             verdict,
             definite_violation,
             unreachable,
-            reason,
             paths,
         }
     }
@@ -84,22 +127,22 @@ impl Proof {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct CheckReport {
+    pub status: Status,
     pub result: bool,
     pub verdict: Verdict,
     pub definite_violation: bool,
     pub unreachable: bool,
-    pub reason: Option<UnknownReason>,
     pub paths: Vec<PathProof>,
 }
 
 impl CheckReport {
     pub(super) fn new(proof: Proof) -> Self {
         Self {
+            status: proof.status,
             result: proof.verdict == Verdict::T,
             verdict: proof.verdict,
             definite_violation: proof.definite_violation,
             unreachable: proof.unreachable,
-            reason: proof.reason,
             paths: proof.paths,
         }
     }
@@ -128,11 +171,7 @@ mod tests {
                     .iter()
                     .enumerate()
                     .map(|(id, verdict)| {
-                        let result = if *verdict == Unknown {
-                            SolveResult::unknown(UnknownReason::BudgetExceeded)
-                        } else {
-                            SolveResult::known(*verdict)
-                        };
+                        let result = SolveResult::known(*verdict);
                         PathProof::new(id as u32, true, ProofSource::Solver, result)
                     })
                     .collect();
@@ -144,7 +183,7 @@ mod tests {
                 assert_eq!(proof.unreachable, unreachable);
                 assert_eq!(proof.definite_violation, states.contains(&Refuted));
                 assert_eq!(
-                    proof.reason.is_some(),
+                    proof.status == Status::MaybeViolated,
                     expected == Verdict::F && !unreachable && !states.contains(&Refuted)
                 );
             }

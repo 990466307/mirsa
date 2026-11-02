@@ -12,10 +12,9 @@ pub use mirsa_analysis::query;
 extern crate rustc_driver;
 extern crate rustc_hir;
 extern crate rustc_interface;
-extern crate rustc_lexer;
 extern crate rustc_middle;
 extern crate rustc_session;
 extern crate rustc_span;
 
 mod input;
-pub use input::{Error, MirInput, Mirsa, Options, SourceBindings, SourceInput};
+pub use input::{AnnotationReport, Error, MirInput, Mirsa, Options, SourceInput};

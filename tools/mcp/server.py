@@ -1,10 +1,12 @@
-"""Expose the existing MIRSA query API over MCP stdio, shaped for agent use."""
-
+"""Analyze MIRSA attributes already present in Rust source over MCP stdio."""
 import json
 import os
-from pathlib import Path
 import re
+import sys
 import tempfile
+import threading
+import time
+from pathlib import Path
 from typing import Annotated, Any
 
 import anyio
@@ -16,61 +18,72 @@ ROOT = Path(__file__).resolve().parents[2]
 RUNTIME = ROOT / "target/mcp"
 WORKER = RUNTIME / "mirsa-query"
 QUERY_SECONDS = 90
-AUTO_MARKER = "mirsa_line_entry"
+TRACE_PATH = os.environ.get("MIRSA_TRACE")
+TRACE_LOCK = threading.Lock()
 
-PROBE_FORMS = ("${n} == ${n}", "${n} != 0", "len(${n}) >= 0", "is_null(${n})")
+class AttributeServer(MCPServer):
+    async def call_tool(self, name, arguments, context=None):
+        # The MCP runtime otherwise silently discards unknown function arguments.
+        if name == "mirsa_query":
+            unknown = set(arguments) - {"file", "code", "crate_root", "rustc_args", "lines", "verbose"}
+            if unknown:
+                raise ToolError("input: 不支持的参数：" + ", ".join(sorted(unknown)) + "；请在源码中使用 MIRSA 查询属性")
+        return await super().call_tool(name, arguments, context)
 
-BINDING_PATTERN = re.compile(r"\b(?:let|mut)\s+(?:mut\s+)?([A-Za-z_][A-Za-z0-9_]*)")
-RUST_KEYWORDS = frozenset({
-    "as", "break", "const", "continue", "crate", "dyn", "else", "enum", "extern", "false",
-    "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub",
-    "ref", "return", "self", "Self", "static", "struct", "super", "trait", "true", "type",
-    "unsafe", "use", "where", "while", "async", "await", "box", "macro", "union",
-})
 
-PARAM_PATTERN = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\s*:")
-FN_PATTERN = re.compile(r"\bfn\s+[A-Za-z_][A-Za-z0-9_]*\s*(?:<[^>]*>)?\s*\(")
-
-mcp = MCPServer(
+mcp = AttributeServer(
     "MIRSA",
     instructions=(
-        "MIRSA 分析 Rust 代码中的指定性质，供 Agent 核实自己的判断。"
-        "用户给文件时先 mirsa_read_lines 找行号；给代码时直接使用同一份 code。"
-        "可用 mirsa_variables 核实该位置的变量名，再用 mirsa_query 验证性质。"
-        "file 与 code 二选一；line 从 1 开始，查询目标语句执行前的状态。"
-        "代码须能独立编译；缺少依赖、类型或调用前提时，应说明缺失的信息，不能自行假定。"
-        "工具在内存中加定位标注，不修改原文件。"
-        "DSL 例如 $i < len($s) at 'mirsa_line_entry 或 facts($s) at 'mirsa_line_entry。"
-        "位置只有开头一个单引号，末尾不加分号。bindings 可省略，默认源码与 DSL 同名；"
-        "不同名时传映射，例如 {\"index\": \"i\"}。"
-        "支持数值、逻辑、位运算、类型转换以及 len/is_null/is_live/offset/extent 等查询；"
-        "完整文法见仓库 crates/dsl/grammar.ebnf。facts 只接受一个参数，返回抽象信息和符号关系。"
-        "Agent 负责选择要验证的性质：例如切片下标检查 $i < len($s)，"
-        "NonZero 构造检查 $x != 0。每条查询只验证该性质；"
-        "指针非空不能替代对象有效性、对齐、边界、生命周期等条件，复制还涉及源、目标及重叠要求。"
-        "conclusion.proved=true 表示该性质在当前模型和输入前提下已证明；"
-        "definite_violation=true 表示模型内存在必然违反性质的路径；"
-        "unreachable=true 表示查询点不可达。其他情况是未证明，查看 reason。"
-        "result=false 不能单独判漏洞；reason 解释分析为何未证明，并不描述代码缺陷。"
-        "evidence 是抽象事实，unproven_witness 是求解器候选模型，均不能自动当成真实执行反例。"
-        "facts 是合并信息，不能将不同变量的范围任意组合成一次真实执行。"
-        "当前按目标函数分析，不会自动把某个调用方的具体实参当作函数入口前提。"
-        "未知库语义、路径合并和循环可能损失精度；不要把一条性质证明扩展为整个调用或文件安全。"
-        "汇报实际验证的位置、性质、结论和未覆盖的前提。"
-        "编译、绑定、查询、进程错误及超时不构成性质结论。"
-        "当前接受 .rs 或完整源码，不直接接受 Cargo.toml；"
-        "外部依赖用 rustc_args 传 --extern/-L，路径使用 WSL 绝对路径。"
+        "MIRSA 分析 Rust 源码中已有的 #[mirsa::check(...)] 和 #[mirsa::facts(...)] 属性。"
+        "先在待分析语句或表达式上写属性，再传入 file 或 code，二者必须且只能提供一个。"
+        "不接受外部 DSL、行号、变量绑定或注释位置标注；源码变量自动按标注位置的作用域解析。"
+        "例如 #[mirsa::check(index < len(table))]、#[mirsa::facts(table)]；属性中不需要 dollar 符号。"
+        "工具不修改源文件，一次返回全部属性查询，按源码位置和分析路径分别提供结论和证据。"
+        "默认返回摘要；仅在需要完整原始报告时传 verbose=true。"
+        "reports 为空只表示没有启用的查询属性，不表示整个文件安全。"
+        "result=true 表示所查询的性质已证明，definite_violation=true 表示模型内确定违反；"
+        "其他正常状态为 maybe_violated 或 unreachable，查看逐路径 evidence 和 notes。"
+        "单条性质成立不代表整个 unsafe 调用安全，候选 SMT 模型不保证对应真实执行。"
+        "分析 crate 内某个文件时，用 file 指定目标文件、crate_root 指定 src/lib.rs 等编译入口。"
+        "lines 限定目标文件插入属性后的行范围；返回的源码与位置都对应目标文件。"
+        "当前接受单文件或可编译的完整源码；外部依赖用 rustc_args 传 --extern/-L。"
+        "代码缺少依赖、编译错误或查询错误不构成安全性质结论。"
     ),
     log_level="WARNING",
 )
+
+def trace_query(source: str, label: str, line: int, dsl: str, result: dict[str, Any]) -> None:
+    """Append one query record; never let tracing break a query."""
+    if not TRACE_PATH:
+        return
+    entry = {
+        "time": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "source_label": label,
+        "line": line,
+        "dsl": dsl,
+        "source": source,
+        "location": result.get("location"),
+        "resolved_bindings": result.get("resolved_bindings"),
+        "conclusion": result.get("conclusion"),
+    }
+    try:
+        path = Path(TRACE_PATH)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with TRACE_LOCK, open(path, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
 
 
 def worker_env() -> dict[str, str]:
     config = json.loads((RUNTIME / "runtime.json").read_text())
     libraries = [str(RUNTIME / "lib"), config["rustc_lib"]]
-    if os.environ.get("LD_LIBRARY_PATH"):
-        libraries.append(os.environ["LD_LIBRARY_PATH"])
-    return dict(os.environ, LD_LIBRARY_PATH=os.pathsep.join(libraries))
+    # Linux 用 LD_LIBRARY_PATH，macOS 用 DYLD_LIBRARY_PATH：设置当前平台认的那个，
+    # worker 才能找到 libz3 与 rustc driver 的动态库。
+    var = "DYLD_LIBRARY_PATH" if sys.platform == "darwin" else "LD_LIBRARY_PATH"
+    if os.environ.get(var):
+        libraries.append(os.environ[var])
+    return dict(os.environ, **{var: os.pathsep.join(libraries)})
 
 
 async def run_worker(request: dict[str, Any]) -> dict[str, Any]:
@@ -88,153 +101,16 @@ async def run_worker(request: dict[str, Any]) -> dict[str, Any]:
         raise ToolError(f"runtime: {error}") from error
     diagnostics = result.stderr.decode(errors="replace")[-12000:]
     try:
-        return json.loads(result.stdout)
+        reply = json.loads(result.stdout)
     except (ValueError, UnicodeError) as error:
         raise ToolError(
             f"runtime: 查询进程未返回有效结果（退出码 {result.returncode}）\n{diagnostics}"
         ) from error
-
-def line_offsets(source: str) -> list[int]:
-    """Byte offsets at which each 1-based line starts, plus a final sentinel."""
-    offsets = [0]
-    for index, char in enumerate(source):
-        if char == "\n":
-            offsets.append(index + 1)
-    return offsets
-
-
-def find_anchor(lines: list[str], line: int) -> int:
-    """Pick the line after which the marker must sit to annotate `line`.
-
-    MIRSA requires a marker to be immediately followed by the statement it
-    annotates. A statement often spans several lines (or starts after a blank
-    line), so the marker cannot simply go directly above `line`: it must go after
-    the previous non-blank, non-comment line. Otherwise MIRSA sees a blank line
-    between marker and statement and reports the point as unreachable.
-    """
-    index = line - 2
-    while index >= 0:
-        text = lines[index].strip()
-        if text and not text.startswith("//"):
-            return index + 2
-        index -= 1
-    return line
-
-
-def mark_statement(source: str, line: int) -> tuple[str, int]:
-    """Insert `// mirsa: <AUTO_MARKER>` so it annotates 1-based `line`.
-
-    Returns the rewritten source and the 1-based line the marker precedes.
-    MIRSA rejects two markers with the same name, so an existing marker with our
-    name is reused (in that case the caller must have run against the annotated
-    source already).
-    """
-    for text in source.splitlines():
-        if text.strip().startswith(f"// mirsa: {AUTO_MARKER}"):
-            return source, line
-    lines = source.splitlines()
-    if not 1 <= line <= len(lines):
-        raise ToolError(f"input: line={line} 超出文件范围（该文件共 {len(lines)} 行）")
-    anchor = find_anchor(lines, line)
-    offsets = line_offsets(source)
-    start = offsets[anchor - 1]
-    end = source.find("\n", start)
-    text = source[start:] if end < 0 else source[start:end]
-    indent = text[: len(text) - len(text.lstrip())]
-    return f"{source[:start]}{indent}// mirsa: {AUTO_MARKER}\n{source[start:]}", anchor
-
-
-def source_candidates(source: str, line: int) -> list[str]:
-    """Names that might be in scope at `line`, innermost first (a hint only).
-
-    Two passes, because they need different scoping rules:
-
-    * local bindings are collected by walking backwards while tracking brace
-      nesting - a `}` means that block has already closed before the query point,
-      so declarations inside it are out of scope;
-    * function parameters are scoped to the whole function, so every enclosing
-      `fn` signature is collected regardless of depth (an open signature on the
-      preceding line has no `}` yet, which is exactly the enclosing function).
-
-    This is a source-level guess, not MIRSA's binding decision - `mirsa_variables`
-    probes the real answer, and a wrong guess is not evidence about any property.
-    """
-    lines = source.splitlines()
-    if not 1 <= line <= len(lines):
-        return []
-    seen: list[str] = []
-
-    def add(name: str) -> None:
-        if name not in seen and name not in RUST_KEYWORDS:
-            seen.append(name)
-
-    for offset in range(line - 1, -1, -1):
-        if FN_PATTERN.search(lines[offset]):
-            for name in PARAM_PATTERN.findall(lines[offset]):
-                add(name)
-
-    depth = 0
-    for offset in range(line - 1, -1, -1):
-        text = lines[offset]
-        depth += text.count("}") - text.count("{")
-        if depth > 0:
-            continue
-        for name in BINDING_PATTERN.findall(text):
-            add(name)
-    return seen
-
-
-def dsl_names(dsl: str) -> list[str]:
-    """Variable names referenced by a DSL expression, in order of appearance."""
-    names: list[str] = []
-    for name in re.findall(r"\$([A-Za-z_][A-Za-z0-9_]*)", dsl):
-        if name not in names:
-            names.append(name)
-    return names
-
-
-def identity_bindings(
-    dsl: str, bindings: dict[str, str] | None
-) -> tuple[dict[str, str], list[str]]:
-    """Default each DSL variable to a same-named source variable.
-
-    Returns the effective mapping plus the DSL names that were defaulted.
-    """
-    effective = dict(bindings or {})
-    defaulted = [name for name in dsl_names(dsl) if name not in effective]
-    for name in defaulted:
-        effective[name] = name
-    return effective, defaulted
-
-
-async def probe_variables(
-    file: str | None, source: str, names: list[str]
-) -> dict[str, list[str]]:
-    """Split `names` into those MIRSA can resolve at the marker and those it cannot."""
-    visible: list[str] = []
-    unresolved: list[str] = []
-    for name in names:
-        found = False
-        for form in PROBE_FORMS:
-            dsl = form.replace("{n}", name) + f" at '{AUTO_MARKER}"
-            reply = await run_worker(
-                {
-                    "file": file, "source": source, "dsl": dsl,
-                    "bindings": {name: name}, "rustc_args": [],
-                }
-            )
-            if reply.get("status") == "ok":
-                found = True
-                break
-            message = reply.get("message", "")
-            if reply.get("kind") == "compilation":
-                continue
-            if reply.get("kind") == "binding" and name in message:
-                break
-            found = True
-            break
-        (visible if found else unresolved).append(name)
-    return {"visible": visible, "not_visible": unresolved}
+    if reply.get("status") == "error" and reply.get("kind") == "compilation" and diagnostics.strip():
+        message = reply.get("message", "源码编译失败")
+        if diagnostics.strip() not in message:
+            reply["message"] = f"{message}\n{diagnostics.strip()}"
+    return reply
 
 
 def fact_highlights(facts: dict[str, Any], limit: int = 6) -> list[str]:
@@ -244,6 +120,12 @@ def fact_highlights(facts: dict[str, Any], limit: int = 6) -> list[str]:
     `Length($table) = [3, 3]` is the reason a call is out of bounds, which is a
     different question from why the analysis could not decide something.
     """
+    if "paths" in facts:
+        out: list[str] = []
+        for path in facts.get("paths") or []:
+            prefix = f"path {path.get('path_id')} (merged={path.get('merged')}): "
+            out.extend(prefix + text for text in fact_highlights(path, limit))
+        return out[:limit]
     out: list[str] = []
     for item in facts.get("abstract_info", []) or []:
         subject = item.get("subject", {}) or {}
@@ -286,36 +168,171 @@ def _is_singleton(text: str) -> bool:
     return low == high
 
 
-async def gather_evidence(
-    file: str, source: str, dsl: str, bindings: dict[str, str], rustc_args: list[str]
-) -> dict[str, list[str]]:
-    """Ask `facts()` for every variable the property mentions.
+def _render_expr(node: Any) -> str:
+    if not isinstance(node, dict):
+        return str(node)
+    kind = node.get("kind")
+    if kind == "variable":
+        return str(node.get("name", "?"))
+    if kind == "constant":
+        if node.get("ty") == "bool":
+            return "true" if str(node.get("bits")) == "1" else "false"
+        return str(node.get("bits", "?"))
+    if kind == "typed":
+        return _render_expr(node.get("expression"))
+    if kind == "property":
+        prop = str(node.get("property"))
+        argument = _render_expr(node.get("argument"))
+        if prop == "Length":
+            return "len(" + argument + ")"
+        return prop + "(" + argument + ")"
+    if kind == "binary":
+        op = _BINARY.get(str(node.get("operator")), str(node.get("operator")))
+        return f"{_render_expr(node.get('left'))} {op} {_render_expr(node.get('right'))}"
+    if kind == "unary":
+        return f"{node.get('operator', '')}{_render_expr(node.get('expression'))}"
+    return str(kind or "?")
 
-    The variable's own numeric range and the slice's length are what make a
-    definite violation explicable; the solver's `reason` cannot supply that.
-    """
-    evidence: dict[str, list[str]] = {}
-    for name in dsl_names(dsl):
-        reply = await run_worker(
-            {
-                "file": file, "source": source, "dsl": f"facts(${name}) at '{AUTO_MARKER}",
-                "bindings": bindings, "rustc_args": rustc_args,
+
+def _render_fact(raw: Any) -> str:
+    try:
+        fact = json.loads(raw) if isinstance(raw, str) else raw
+    except ValueError:
+        return str(raw)[:160]
+    if not isinstance(fact, dict):
+        return str(raw)[:160]
+    kind = fact.get("kind")
+    if kind == "condition":
+        return _render_expr(fact.get("expression"))
+    if kind == "definition":
+        return f"{_render_expr(fact.get('target'))} := {_render_expr(fact.get('expression'))}"
+    if kind == "same_value":
+        members = fact.get("members") or []
+        return " ≡ ".join(_render_expr(m) for m in members)
+    expression = fact.get("expression")
+    if expression is not None:
+        return _render_expr(expression)
+    return ""
+
+
+def _render_value(node: Any) -> str:
+    if not isinstance(node, dict):
+        return str(node)
+    kind = node.get("kind")
+    if kind == "bool":
+        if node.get("value") is None:
+            return "{true, false}"
+        return "true" if node.get("value") else "false"
+    if kind == "integer":
+        return f"[{node.get('low')}, {node.get('high')}]"
+    return str(kind or "?")
+
+
+def _render_eval(
+    node: Any,
+    depth: int = 0,
+    out: list[str] | None = None,
+    parent_expression: str | None = None,
+) -> list[str]:
+    """Flatten a reasoning tree, collapsing a node that repeats its parent."""
+    out = [] if out is None else out
+    if not isinstance(node, dict) or depth > 4 or len(out) >= 6:
+        return out
+    expression = _render_expr(node.get("expression"))
+    value = _render_value(node.get("value"))
+    same = expression == parent_expression
+    if not same:
+        out.append("  " * depth + f"{expression} = {value}")
+    for premise in node.get("premises") or []:
+        _render_eval(premise, depth if same else depth + 1, out, expression)
+        if len(out) >= 6:
+            break
+    return out
+
+
+def _clean_smt_assumption(text: str) -> bool:
+    """Drop tautologies such as `(index == index)` or `(_3 >= true)`."""
+    body = text.strip().strip("()")
+    if "==" in body:
+        left, right = (part.strip() for part in body.split("==", 1))
+        if left == right:
+            return False
+    if body.endswith(">= true") or body.endswith("<= false"):
+        return False
+    # 整数类型的“不超过最大值”是恒真上界，不是证据
+    if re.search(r"<=\s*(1844674407370955161[45]|9223372036854775807|"
+                 r"429496729[45]|2147483647|6553[45]|32767|255|127)", body):
+        return False
+    return True
+
+
+def summarize_evidence(evidence: Any) -> dict[str, Any]:
+    """Render one path's evidence with the analyzer's source-level expression view."""
+    if not isinstance(evidence, dict):
+        return {}
+    out: dict[str, Any] = {}
+    notes: list[str] = []
+
+    view = evidence.get("expressions")
+    if isinstance(view, dict):
+        kind = view.get("kind")
+        goal = str(view.get("goal", ""))
+        if kind:
+            out["method"] = str(kind)
+        if kind == "abstract":
+            notes.extend(str(fact) for fact in view.get("facts") or [])
+        elif kind == "smt":
+            negative = view.get("negative")
+            positive = view.get("positive")
+            notes.append(f"¬P = {negative}, P = {positive}")
+            seen: set[str] = set()
+            for assumption in view.get("assumptions") or []:
+                text = str(assumption)
+                if not _clean_smt_assumption(text) or text in seen:
+                    continue
+                seen.add(text)
+                notes.append(text)
+                if len(notes) >= 6:
+                    break
+            out["smt"] = {
+                "negative": negative,
+                "positive": positive,
+                "goal": goal,
             }
-        )
-        if reply.get("status") != "ok":
-            continue
-        highlights = fact_highlights((reply["report"].get("output") or {}).get("result") or {})
-        if highlights:
-            evidence[name] = highlights
-    return evidence
+
+    if not notes:
+        # 旧格式兜底：推理树或 facts 列表
+        smt = evidence.get("smt")
+        if isinstance(smt, dict):
+            checks = smt.get("checks") if isinstance(smt.get("checks"), dict) else smt
+            negative = checks.get("negative")
+            positive = checks.get("positive")
+            if negative is not None:
+                notes.append(
+                    f"SMT: ¬P = {negative}"
+                    + (f", P = {positive}" if positive is not None else "")
+                )
+        context = evidence.get("context")
+        tree = evidence.get("abstract_evaluation")
+        if tree and not notes:
+            notes = _render_eval(tree)
+        elif isinstance(context, list):
+            notes.extend(_render_fact(item) for item in context[:4])
+
+    deduped: list[str] = []
+    for note in notes:
+        if note and note not in deduped:
+            deduped.append(note)
+    out["notes"] = deduped[:6]
+    return out
 
 
 def summarize(output: dict[str, Any] | None) -> dict[str, Any]:
     """Lift the verdict details agents need, instead of leaving them in paths[0].
 
     `mirsa-query` returns a rich check (verdict, definite_violation, unreachable,
-    reason, paths). Older builds collapsed it to a bare boolean, in which case a
-    `false` says nothing about whether the property was refuted or merely unknown.
+    status, paths). Older builds collapsed it to a bare boolean, in which case a
+    `false` says nothing about whether the property was refuted or may be violated.
 
     Only data goes here. How to read it is stated once in the server instructions,
     because anything repeated per result accumulates in the conversation history.
@@ -326,13 +343,13 @@ def summarize(output: dict[str, Any] | None) -> dict[str, Any]:
     if isinstance(result, bool):
         return {
             "kind": "check", "result": result, "proved": result,
-            "definite_violation": None, "unreachable": None, "reason": None,
+            "definite_violation": None, "unreachable": None,
+            "status": "proved" if result else "maybe_violated",
         }
     if not isinstance(result, dict):
         return {"kind": "check", "result": result, "proved": bool(result)}
     verdict = result.get("verdict")
     paths = result.get("paths") or []
-    reason = result.get("reason")
     counterexamples = [p["candidate"] for p in paths if p.get("candidate")]
     summary = {
         "kind": "check",
@@ -341,155 +358,85 @@ def summarize(output: dict[str, Any] | None) -> dict[str, Any]:
         "proved": verdict == "T",
         "definite_violation": bool(result.get("definite_violation", False)),
         "unreachable": bool(result.get("unreachable", False)),
-        "reason": reason,
         "paths": len(paths),
         "path_verdicts": [
-            {"path_id": p.get("path_id"), "verdict": p.get("verdict"),
-             "definite_violation": p.get("definite_violation")}
+            {
+                "path_id": p.get("path_id"),
+                "verdict": p.get("verdict"),
+                "definite_violation": p.get("definite_violation"),
+                "status": p.get("status") or (
+                    "violated" if p.get("definite_violation") else
+                    "unreachable" if p.get("unreachable") else
+                    "proved" if p.get("verdict") == "T" else "maybe_violated"
+                ),
+                "source": p.get("source"),
+                **({"notes": p["notes"]} if p.get("notes") else {}),
+                **(
+                    {"evidence": summarize_evidence(p.get("evidence"))}
+                    if p.get("evidence")
+                    else {}
+                ),
+            }
             for p in paths
         ],
     }
     if counterexamples:
         summary["unproven_witness"] = counterexamples
+
+    # 正常结论由逐路径 evidence 解释，补充求解诊断只作为 notes 输出。
+    if summary["definite_violation"]:
+        summary["status"] = "violated"
+    elif summary["unreachable"]:
+        summary["status"] = "unreachable"
+    elif summary["proved"]:
+        summary["status"] = "proved"
+    else:
+        summary["status"] = "maybe_violated"
+    notes = list(dict.fromkeys(note for p in paths for note in p.get("notes", [])))
+    if notes:
+        summary["notes"] = notes
     return summary
 
-@mcp.tool()
-async def mirsa_variables(
-    line: Annotated[int, Field(ge=1, description="要查看的语句所在行号（1 起）")],
-    file: Annotated[
-        str | None,
-        Field(description="Rust 源文件路径：WSL（/home/... 、/mnt/d/...）或 Windows（D:\\\\dir\\\\f.rs）都行；与 code 二选一"),
-    ] = None,
-    code: Annotated[
-        str | None, Field(description="直接粘贴的 Rust 代码全文；与 file 二选一")
-    ] = None,
-    candidates: Annotated[
-        list[str] | None,
-        Field(description="可选：想核实的源码变量名；不传则核实按作用域扫描到的名字"),
-    ] = None,
-) -> dict[str, Any]:
-    """列出某一行可见的源码变量名 —— **不确定变量名时先调这个，不要靠猜**。
 
-    文件和粘贴的代码都支持（file 与 code 二选一）：
-    绑定时传 file 就能核实该文件的变量，贴代码时把同一份 code 传进来即可。
-    绑定失败（报“找不到可见的变量 X”）只说明该名字在此处不可见，不说明任何性质结论。
-    返回 visible（MIRSA 确认在该点可解析）和 not_visible。
-    not_visible 只涵盖你给出的候选；没列进来的名字也可能存在，把它们放进 candidates 再核实一次。
-    这个工具只回答“哪些名字能用”，不判断任何性质。
-    """
-    source, file_arg, source_label = resolve_source(file, code)
-    annotated, _ = mark_statement(source, line)
-    names = list(dict.fromkeys(candidates or source_candidates(source, line)))
-    lines = source.splitlines()
-    source_line = lines[line - 1] if line - 1 < len(lines) else ""
-    if not names:
-        return {
-            "line": line, "source": source_label, "source_line": source_line,
-            "visible": [], "not_visible": [],
-            "hint": "该行之前没有扫描到名字；请用 candidates 直接给出候选变量名。",
-        }
-    probed = await probe_variables(file_arg, annotated, names)
-    return {
-        "line": line,
-        "source": source_label,
-        "source_line": source_line,
-        **probed,
-    }
+def format_error(reply: dict[str, Any]) -> str:
+    """Message plus any diagnostic detail the message itself does not carry."""
+    message = str(reply.get("message", "") or "").strip()
+    lines = [message] if message else []
+    for diagnostic in reply.get("diagnostics") or []:
+        if not isinstance(diagnostic, dict):
+            continue
+        text = str(diagnostic.get("message", "") or "").strip()
+        hint = str(diagnostic.get("hint", "") or "").strip()
+        if text and text not in message:
+            lines.append(text)
+        if hint and hint not in message:
+            lines.append("hint: " + hint)
+    return "\n".join(lines) or "查询失败"
 
 
-async def run_check(
-    source: str,
-    source_label: str,
-    file: str | None,
-    line: int,
-    dsl: str,
-    bindings: dict[str, str] | None,
-    rustc_args: list[str] | None,
-    tool_hint: str,
-) -> dict[str, Any]:
-    """Shared body of the line-based checks.
+def to_local_path(raw: str) -> Path:
+    """把工具参数里的路径规整成本机绝对路径。
 
-    `file` names the on-disk file when there is one; it is `None` for a pasted
-    snippet, in which case the worker compiles the in-memory source alone and the
-    label is only used in messages.
-    """
-    if AUTO_MARKER not in dsl:
-        raise ToolError(
-            f"query: dsl 的标注名必须用 '{AUTO_MARKER}'，例如 "
-            f"`$index < len($slice) at '{AUTO_MARKER}`（末尾不加引号），收到的是 {dsl!r}"
-        )
-    annotated, _ = mark_statement(source, line)
-    effective, defaulted = identity_bindings(dsl, bindings)
-    request: dict[str, Any] = {
-        "source": annotated, "dsl": dsl,
-        "bindings": effective, "rustc_args": rustc_args or [],
-    }
-    if file is not None:
-        request["file"] = file
-    reply = await run_worker(request)
-    if reply.get("status") != "ok":
-        defaulted_note = (
-            f"（{', '.join(defaulted)} 是未显式指定、按同名默认补上的）" if defaulted else ""
-        )
-        message = reply.get("message", "")
-        if reply.get("kind") == "binding" and "找不到源码标注" in message:
-            raise ToolError(
-                f"tool-error: 工具未能在第 {line} 行附近放置标注，因此这条语句没有被分析"
-                f"（不是你的调用错误，也没有任何性质结论）。\n"
-                f"常见原因：该行是注释、空行或文件级属性，或者它和上一条语句之间没有可插入"
-                f"标注的位置。请改查同一条语句的首行，或改用 mirsa_query 在源码里显式标注。\n"
-                f"原始错误：{message}"
-            )
-        raise ToolError(
-            f"{reply.get('kind')}: {message}\n"
-            f"本次使用的 bindings：{json.dumps(effective, ensure_ascii=False)}{defaulted_note}\n"
-            f"提示：{tool_hint}"
-        )
-    lines = source.splitlines()
-    output = reply["report"].get("output") or {}
-    conclusion = summarize(output)
-    statement = lines[line - 1] if line - 1 < len(lines) else ""
-    location = {
-        "source": source_label, "line": line,
-        "source_line": statement, "annotated_statement": statement,
-    }
-    if conclusion.get("kind") == "facts":
-        return {
-            "facts": output.get("result"),
-            "location": location,
-            "resolved_bindings": effective,
-        }
-    if conclusion.get("definite_violation"):
-        evidence = await gather_evidence(
-            file, annotated, dsl, effective, rustc_args or []
-        )
-        if evidence:
-            conclusion["evidence"] = evidence
-    return {
-        "conclusion": conclusion,
-        "location": location,
-        "resolved_bindings": effective,
-    }
-
-
-def to_wsl_path(raw: str) -> Path:
-    """Accept a Windows path as well as a WSL one.
-
-    The worker runs inside WSL, so it needs `/mnt/<drive>/...` style paths, but
-    users and agents naturally write `D:\\dir\\file.rs` or `\\\\wsl$\\Distro\\...`.
-    Translate both instead of rejecting them.
+    macOS 上只认本机路径：去掉多余的引号/空白、展开 `~`；相对路径按
+    server 进程的 cwd 解析。不再做 Windows 盘符或 WSL 路径的翻译。
     """
     text = raw.strip().strip('"').strip("'")
-    lowered = text.lower()
-    for prefix in ("\\\\wsl$\\", "\\\\wsl.localhost\\", "//wsl$/", "//wsl.localhost/"):
-        if lowered.startswith(prefix.lower()):
-            rest = text[len(prefix):]
-            head, _, tail = rest.partition("\\" if "\\" in rest else "/")
-            return Path("/" + tail.replace("\\", "/"))
-    if len(text) >= 3 and text[1] == ":" and text[2] in ("\\", "/"):
-        drive = text[0].lower()
-        return Path(f"/mnt/{drive}/" + text[3:].replace("\\", "/"))
-    return Path(text)
+    path = Path(text).expanduser()
+    return path if path.is_absolute() else path.resolve()
+
+
+def parse_line_range(text: str | None) -> tuple[int, int] | None:
+    """Parse "10-20" / "12" into an inclusive range; None keeps every line."""
+    if text is None or not str(text).strip():
+        return None
+    matched = re.fullmatch(r"\s*(\d+)\s*(?:-\s*(\d+)\s*)?", str(text))
+    if matched is None:
+        raise ToolError(f'input: lines 格式应为 "10-20" 或 "12"，收到 {text!r}')
+    start = int(matched.group(1))
+    end = int(matched.group(2) or start)
+    if start < 1 or end < start:
+        raise ToolError(f"input: lines 范围无效：{text!r}")
+    return start, end
 
 
 def resolve_source(
@@ -502,13 +449,9 @@ def resolve_source(
         if not code.strip():
             raise ToolError("input: code 不能为空")
         return code, None, "<pasted code>"
-    path = to_wsl_path(file)
-    if not path.is_absolute() or not path.is_file():
-        raise ToolError(
-            f"input: 找不到这个文件：{file}"
-            f"（按 WSL 路径解析为 {path}）。WSL 路径如 /home/... ，"
-            f"Windows 路径如 D:\\\\dir\\\\f.rs 也可以，会自动转成 /mnt/d/dir/f.rs"
-        )
+    path = to_local_path(file)
+    if not path.is_file():
+        raise ToolError(f"input: 找不到这个文件：{file}（解析为 {path}）；请给本机绝对路径")
     if path.suffix != ".rs":
         raise ToolError("input: 请传入 .rs 源文件；当前不直接驱动 Cargo 项目")
     return path.read_text(encoding="utf-8", errors="replace"), str(path.resolve()), str(path)
@@ -516,94 +459,74 @@ def resolve_source(
 
 @mcp.tool()
 async def mirsa_query(
-    line: Annotated[
-        int,
-        Field(
-            ge=1,
-            description=(
-                "要查询的语句的行号（1 起）；查的是它执行前的状态。"
-                "传 file 时按该文件行号算，传 code 时从粘贴内容第一行算。"
-            ),
-        ),
-    ],
-    dsl: Annotated[
-        str,
-        Field(max_length=65536, description="性质或 facts 查询，末尾不加分号；标注写 at 'mirsa_line_entry（只有一个引号）"),
-    ],
-    file: Annotated[
+    file: Annotated[str | None, Field(description="已包含 MIRSA 属性的 .rs 文件路径；与 code 二选一")] = None,
+    code: Annotated[str | None, Field(description="已包含 #[mirsa::check(...)] 或 #[mirsa::facts(...)] 的完整 Rust 源码；与 file 二选一")] = None,
+    crate_root: Annotated[
         str | None,
-        Field(description="Rust 源文件路径：WSL（/home/... 、/mnt/d/...）或 Windows（D:\\\\dir\\\\f.rs）都行；与 code 二选一"),
+        Field(description="可选 crate 入口 .rs 路径（如 src/lib.rs）；与 file 配合，从入口编译整个 crate，只返回 file 中的查询"),
     ] = None,
-    code: Annotated[
-        str | None, Field(description="直接粘贴的 Rust 源码全文；与 file 二选一")
+    rustc_args: Annotated[list[str] | None, Field(description="可选 rustc 参数，依赖路径使用绝对路径")] = None,
+    lines: Annotated[
+        str | None,
+        Field(description='只返回 file 中该行范围内的结论，行号以插入属性后的源码为准，例如 "10-20" 或 "12"；默认返回全部'),
     ] = None,
-    bindings: Annotated[
-        dict[str, str] | None,
-        Field(description='DSL 名到源码变量名；省略则默认同名（$index -> index）。拿不准时先调 mirsa_variables'),
-    ] = None,
-    rustc_args: Annotated[list[str] | None, Field(description="可选 rustc 编译参数；依赖路径用绝对路径")] = None,
+    verbose: Annotated[bool, Field(description="是否附加完整原始报告，默认仅返回摘要")] = False,
 ) -> dict[str, Any]:
-    """查某个 unsafe 调用点（或任意语句）在**执行前**的性质是否成立。
+    """分析源码中全部 MIRSA 查询属性，返回每条属性的位置、结论和逐路径证据。
 
-    文件和粘贴的代码都支持（file 与 code 二选一），两者行为完全一致：
-    代码在内存里编译，不落盘、不改原文件，也不需要预先写标注。
-
-    不确定该查什么性质时，用下面这些：
-    `get_unchecked`/`get_unchecked_mut` 查 `$i < len($s)`；
-    `split_at_unchecked` 查 `$mid <= len($s)`；`NonZero::new_unchecked` 查 `$v != 0`；
-    `from_raw_parts`/`from_ptr` 可先查 `!is_null($p)`，这只覆盖非空前提；
-    `copy_nonoverlapping` 可先查 `$count <= len($src)`，还须分别检查目标空间、对齐和不重叠等前提。
-
-    line 就是你想查的那条语句的行号——工具自己把标注放到正确位置，不需要你换算；
-    文件里已有同名标注时会直接复用。换行号可以对同一处调用换一条性质再问，
-    也可以传 `facts($x)` 看抽象信息。
-    返回 conclusion（含 proved / definite_violation / reason 等字段）和 evidence；
-    模型内确定违反时会附 evidence 给出相关抽象事实。如何解读结论见服务器说明，返回里不再重复。
+    crate_root 指定编译入口，file 指定目标文件；lines 使用标注后的行号。
     """
     source, file_arg, label = resolve_source(file, code)
-    return await run_check(
-        source=source,
-        source_label=label,
-        file=file_arg,
-        line=line,
-        dsl=dsl,
-        bindings=bindings,
-        rustc_args=rustc_args,
-        tool_hint=(
-            "先调用 mirsa_variables 确认该行可见的变量名，再重试"
-            "（传 file 就传同一个 file，传 code 就传同一份 code）。"
-        ),
+    window = parse_line_range(lines)
+    compilation_file = file_arg
+    if crate_root is not None:
+        if file_arg is None:
+            raise ToolError("input: crate_root 必须与 file 配合使用，不能与 code 配合")
+        _, compilation_file, _ = resolve_source(crate_root, None)
+    selected_file = (
+        Path(file_arg)
+        if file_arg is not None and (crate_root is not None or window is not None)
+        else None
     )
-
-
-@mcp.tool()
-async def mirsa_read_lines(
-    file: Annotated[
-        str,
-        Field(description="Rust 源文件路径：WSL 形式（/home/... 或 /mnt/d/...）或 Windows 形式（D:\\\\dir\\\\f.rs）都可以"),
-    ],
-    start: Annotated[int, Field(ge=1, description="起始行号（1 起）")],
-    count: Annotated[int, Field(ge=1, le=400, description="要读取的行数，最多 400")] = 80,
-) -> dict[str, Any]:
-    """读源文件的一段带行号文本 —— **分析文件时的第一步，用来找到 unsafe 在第几行**。
-
-    存在的理由：agent 自己的读文件工具走 Windows 路径，读 `/home/...` 或
-    `\\\\wsl$\\...` 都会失败（实测），只有这个工具能读到 WSL 里的源码。
-    路径给 Windows 形式（`D:\\dir\\f.rs`）或 WSL 形式（`/mnt/d/dir/f.rs`、`/home/...`）都行。
-    只读文件、不做分析，因此不产生任何性质结论；拿到行号后再交给 mirsa_query。
-    用户把代码直接贴进对话时不需要它——代码本身就在手上。
-    """
-    path = to_wsl_path(file)
-    if not path.is_absolute() or not path.is_file():
-        raise ToolError(f"input: 找不到这个文件：{file}（按 WSL 路径解析为 {path}）")
-    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    window = lines[start - 1 : start - 1 + count]
-    return {
-        "file": str(path),
-        "total_lines": len(lines),
-        "start": start,
-        "lines": [f"{start + i:>5}: {text}" for i, text in enumerate(window)],
+    request: dict[str, Any] = {"rustc_args": rustc_args or []}
+    if file_arg is None:
+        request["source"] = source
+    else:
+        request["file"] = compilation_file
+    reply = await run_worker(request)
+    if reply.get("status") != "ok":
+        raise ToolError(f"{reply.get('kind', 'runtime')}: {format_error(reply)}")
+    reports: list[dict[str, Any]] = []
+    for item in reply.get("reports", []):
+        if selected_file is not None:
+            report_file = item.get("file")
+            if not isinstance(report_file, str) or Path(report_file).resolve() != selected_file:
+                continue
+        if window is not None:
+            line = item.get("line")
+            if not isinstance(line, int) or not (window[0] <= line <= window[1]):
+                continue
+        output = (item.get("report") or {}).get("output") or {}
+        entry: dict[str, Any] = {
+            "location": {"source": item.get("file", label), "line": item["line"], "column": item["column"]},
+            "query": item["query"],
+        }
+        if verbose:
+            entry["report"] = item["report"]
+        if output.get("kind") == "check":
+            entry["conclusion"] = summarize(output)
+        elif output.get("kind") == "facts":
+            entry["facts"] = output.get("result")
+        reports.append(entry)
+        trace_query(source=source, label=label, line=item["line"], dsl=item["query"], result=entry)
+    result: dict[str, Any] = {
+        "source_label": label,
+        "source": source[:40000],
+        "reports": reports,
     }
+    if lines is not None:
+        result["lines"] = lines
+    return result
 
 
 if __name__ == "__main__":

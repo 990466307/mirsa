@@ -3,6 +3,15 @@ use serde::Serialize;
 /// Owned query output, independent of the compiler context.
 #[derive(Clone, Debug, Serialize)]
 pub struct FactOutput {
+    pub unreachable: bool,
+    pub paths: Vec<PathFacts>,
+}
+
+/// Facts for one retained analysis path; merged paths may represent several executions.
+#[derive(Clone, Debug, Serialize)]
+pub struct PathFacts {
+    pub path_id: u32,
+    pub merged: bool,
     pub abstract_info: Vec<AbstractFact>,
     pub symbolic_info: Vec<SymbolicFact>,
 }

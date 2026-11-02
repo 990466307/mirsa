@@ -10,15 +10,19 @@ mod output;
 mod value;
 pub use bind::{Bindings, ValueBinding};
 pub use facts::model::{
-    AbstractFact, BinaryOperator, Expression, FactOutput, Projection, Property, SymbolicFact,
-    UnaryOperator,
+    AbstractFact, BinaryOperator, Expression, FactOutput, PathFacts, Projection, Property,
+    SymbolicFact, UnaryOperator,
 };
-pub use mirsa_dsl::{Diagnostic, Document, GRAMMAR, parse, parse_expression};
+pub use mirsa_dsl::{Diagnostic, DiagnosticContext, Document, GRAMMAR, parse, parse_expression};
 pub use output::{FactValue, Output, PointerTarget, Report};
 mod encode;
+mod evidence;
 mod property;
 mod result;
-pub use result::{CheckReport, PathProof, Proof, ProofSource, Verdict};
+pub use evidence::{
+    Evaluation, EvaluationRule, Evidence, ExpressionEvidence, SolverBinding, SolverEvidence,
+};
+pub use result::{CheckReport, PathProof, Proof, ProofSource, Status, Verdict};
 
 use crate::reduced_product::{CombinedState, engine::transfer_stmt};
 use mirsa_framework::forward::{PathForwardAnalysisResult, replay_state_before_location};
@@ -59,6 +63,8 @@ impl Default for QueryConfig {
 pub enum QueryError {
     IncompleteAnalysis,
     InvalidLocation,
+    BudgetExceeded,
+    Unsupported,
 }
 
 pub struct AnalysisView<'a, 'tcx> {
@@ -216,47 +222,99 @@ struct QueryView<'a, 'tcx> {
 }
 
 impl<'tcx> QueryView<'_, 'tcx> {
-    fn prove(&mut self, property: &Predicate<'tcx>) -> Proof {
+    fn prove(
+        &mut self,
+        property: &Predicate<'tcx>,
+        bindings: &Bindings<'tcx>,
+    ) -> Result<Proof, QueryError> {
         let started = Instant::now();
+        if self.states.is_empty() {
+            return Ok(Proof::from_paths(Vec::new()));
+        }
         if !property.within_budget(self.config.max_nodes) {
-            return Proof {
-                verdict: Verdict::F,
-                definite_violation: false,
-                unreachable: self.states.is_empty(),
-                reason: Some(UnknownReason::BudgetExceeded),
-                paths: Vec::new(),
-            };
+            return Err(QueryError::BudgetExceeded);
+        }
+        // Finish every path's abstract evaluation before optional SMT refinement.
+        // A solver timeout must not prevent later paths from retaining evidence.
+        let mut evaluated = Vec::new();
+        for (_, _, state) in &mut self.states {
+            if started.elapsed() >= self.config.total_timeout {
+                return Err(QueryError::BudgetExceeded);
+            }
+            value::reduce(self.tcx, self.body, state, property);
+            let result = abstract_query::prove(self.tcx, self.body, state, property);
+            let evidence = evidence::collect(self.tcx, self.body, state, property, bindings);
+            if started.elapsed() >= self.config.total_timeout {
+                return Err(QueryError::BudgetExceeded);
+            }
+            evaluated.push((result, evidence));
         }
         let mut paths = Vec::new();
-        for (id, merged, state) in &mut self.states {
+        for ((id, merged, state), (mut result, mut evidence)) in self.states.iter().zip(evaluated) {
             let mut source = ProofSource::Abstract;
-            let mut result = if started.elapsed() >= self.config.total_timeout {
-                mirsa_solver::SolveResult::unknown(UnknownReason::BudgetExceeded)
-            } else {
-                value::reduce(self.tcx, self.body, state, property);
-                abstract_query::prove(self.tcx, self.body, state, property)
-            };
+            let mut notes = Vec::new();
             if result.verdict == SolverVerdict::Unknown && self.config.use_solver {
-                let remaining = self.config.total_timeout.saturating_sub(started.elapsed());
-                if remaining.is_zero() {
-                    result.reason = Some(UnknownReason::BudgetExceeded);
+                if started.elapsed() >= self.config.total_timeout {
+                    notes.push(solver_fallback_note(UnknownReason::BudgetExceeded).into());
                 } else {
-                    source = ProofSource::Solver;
-                    result =
-                        match encode::problem(self.tcx, self.body, state, property, &self.config) {
-                            Ok(problem) => mirsa_solver::solve(
+                    match encode::problem(
+                        self.tcx,
+                        self.body,
+                        state,
+                        property,
+                        &self.config,
+                        bindings,
+                    ) {
+                        Ok((problem, solver_bindings)) => {
+                            let solved = mirsa_solver::solve(
                                 &problem,
                                 self.config
                                     .total_timeout
                                     .saturating_sub(started.elapsed())
                                     .min(self.config.solver_timeout),
-                            ),
-                            Err(reason) => mirsa_solver::SolveResult::unknown(reason),
-                        };
+                            );
+                            if let Some(reason) = solved
+                                .reason
+                                .filter(|reason| *reason != UnknownReason::InsufficientInformation)
+                            {
+                                if reason == UnknownReason::Unsupported {
+                                    return Err(QueryError::Unsupported);
+                                }
+                                notes.push(solver_fallback_note(reason).into());
+                            } else {
+                                source = ProofSource::Solver;
+                                evidence.smt = Some(SolverEvidence {
+                                    problem,
+                                    bindings: solver_bindings,
+                                    checks: solved.evidence.clone(),
+                                });
+                                result = solved;
+                            }
+                        }
+                        Err(UnknownReason::Unsupported) => return Err(QueryError::Unsupported),
+                        Err(reason) => notes.push(solver_fallback_note(reason).into()),
+                    }
                 }
             }
-            paths.push(PathProof::new(*id, *merged, source, result));
+            let mut path = PathProof::new(*id, *merged, source, result);
+            path.notes = notes;
+            evidence.expressions = evidence.expression_view();
+            path.evidence = evidence;
+            paths.push(path);
         }
-        Proof::from_paths(paths)
+        Ok(Proof::from_paths(paths))
+    }
+}
+
+fn solver_fallback_note(reason: UnknownReason) -> &'static str {
+    match reason {
+        UnknownReason::BudgetExceeded => {
+            "Z3 补充求解超时或超过预算，未采用其结果；本路径使用抽象分析结论和证据。"
+        }
+        UnknownReason::BackendDisabled => "Z3 未启用；本路径使用抽象分析结论和证据。",
+        UnknownReason::SolverUnknown => {
+            "Z3 未完成判定，未采用其结果；本路径使用抽象分析结论和证据。"
+        }
+        UnknownReason::Unsupported | UnknownReason::InsufficientInformation => unreachable!(),
     }
 }

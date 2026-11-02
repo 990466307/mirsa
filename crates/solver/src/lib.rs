@@ -5,7 +5,7 @@ mod formula;
 pub use formula::{BinaryOp, Comparison, FloatTerm, Formula, IntTerm, ScalarType, Term, UnaryOp};
 use std::time::Duration;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct Problem {
     pub assumptions: Vec<Formula>,
     pub property: Formula,
@@ -26,7 +26,41 @@ pub enum UnknownReason {
     BudgetExceeded,
     SolverUnknown,
     InsufficientInformation,
-    MixedPaths,
+}
+
+impl UnknownReason {
+    /// One line telling the caller what would most likely turn this into a verdict.
+    pub fn hint(self) -> &'static str {
+        match self {
+            Self::BackendDisabled => "z3 未启用：重新构建时加上 --features z3",
+            Self::Unsupported => {
+                "该表达式暂无模型：换一条更弱的性质（先查 != null / len），或改写为支持的运算"
+            }
+            Self::BudgetExceeded => "超出预算：缩小目标函数、减少分支，或在调用方加超时",
+            Self::SolverUnknown => "求解器未判定：尝试固定某个变量为常量，或拆成更小的子问题",
+            Self::InsufficientInformation => {
+                "信息不足：先用 mirsa_variables 核实变量名，必要时拆成多条性质分别查"
+            }
+        }
+    }
+}
+
+/// Results of the actual backend checks. The script contains the asserted premises;
+/// append the positive or negated goal and check-sat to replay a check.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct SmtEvidence {
+    pub assumptions_smtlib: String,
+    pub goal_smtlib: String,
+    pub negative: Satisfiability,
+    pub positive: Option<Satisfiability>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Satisfiability {
+    Sat,
+    Unsat,
+    Unknown,
 }
 
 #[derive(Clone, Debug)]
@@ -34,6 +68,7 @@ pub struct SolveResult {
     pub verdict: Verdict,
     pub reason: Option<UnknownReason>,
     pub candidate: Option<String>,
+    pub evidence: Option<SmtEvidence>,
 }
 
 impl SolveResult {
@@ -42,6 +77,7 @@ impl SolveResult {
             verdict,
             reason: None,
             candidate: None,
+            evidence: None,
         }
     }
 
@@ -50,6 +86,7 @@ impl SolveResult {
             verdict: Verdict::Unknown,
             reason: Some(reason),
             candidate: None,
+            evidence: None,
         }
     }
 }

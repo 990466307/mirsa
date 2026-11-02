@@ -2,12 +2,6 @@ use std::ops::Range;
 
 pub type Span = Range<usize>;
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
-pub struct Diagnostic {
-    pub span: Span,
-    pub message: String,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RequestKind {
     Check,

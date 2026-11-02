@@ -1,8 +1,9 @@
+mod annotations;
 mod bindings;
-mod markers;
+mod location;
 mod source;
 
-pub use bindings::SourceBindings;
+pub use annotations::AnnotationReport;
 pub use source::SourceInput;
 
 use crate::analysis::interprocedural::AnalysisSession;
@@ -46,7 +47,7 @@ impl fmt::Display for Error {
             Self::Binding(message) => f.write_str(message),
             Self::Query(errors) => {
                 for error in errors {
-                    writeln!(f, "DSL {:?}: {}", error.span, error.message)?;
+                    writeln!(f, "{error}")?;
                 }
                 Ok(())
             }
@@ -55,7 +56,7 @@ impl fmt::Display for Error {
 }
 impl std::error::Error for Error {}
 
-/// A single query: supply a program, bindings and DSL; defaults handle analysis.
+/// Analyze source attributes, or integrate the analysis with an existing MIR body.
 pub struct Mirsa<I = ()> {
     input: I,
     options: Options,

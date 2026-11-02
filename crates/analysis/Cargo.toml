@@ -23,6 +23,3 @@ z3 = ["mirsa_solver/z3"]
 
 [package.metadata.rust-analyzer]
 rustc_private = true
-
-[dev-dependencies]
-serde_json = "1"

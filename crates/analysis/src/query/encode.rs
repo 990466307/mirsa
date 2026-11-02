@@ -323,7 +323,8 @@ pub(super) fn problem<'tcx>(
     state: &CombinedState<'tcx>,
     property: &Predicate<'tcx>,
     config: &QueryConfig,
-) -> Result<Problem> {
+    bindings: &super::Bindings<'tcx>,
+) -> Result<(Problem, Vec<super::SolverBinding>)> {
     let mut encoder = Encoder {
         tcx,
         body,
@@ -350,8 +351,32 @@ pub(super) fn problem<'tcx>(
     };
     let property = encoder.property(property)?;
     encoder.collect()?;
-    Ok(Problem {
-        assumptions: encoder.assumptions,
-        property,
-    })
+    let names = super::facts::expressions::Exporter::new(tcx, body, Some(state), bindings);
+    let mut bindings = encoder
+        .variables
+        .iter()
+        .filter_map(|((path, ty, length), term)| {
+            let Term::Variable(variable, _) = term else {
+                return None;
+            };
+            let subject = names.path(path);
+            Some(super::SolverBinding {
+                variable: *variable,
+                scalar_type: *ty,
+                subject: if *length {
+                    subject.property(super::Property::Length)
+                } else {
+                    subject
+                },
+            })
+        })
+        .collect::<Vec<_>>();
+    bindings.sort_by_key(|b| b.variable);
+    Ok((
+        Problem {
+            assumptions: encoder.assumptions,
+            property,
+        },
+        bindings,
+    ))
 }

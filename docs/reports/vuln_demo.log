@@ -1,0 +1,51 @@
+============================================================================
+源码
+============================================================================
+    1: pub fn definitely_out_of_bounds() -> u8 {
+    2:     let table = [10u8, 20, 30];
+    3:     let index = 5usize;
+    4:     unsafe { *table.get_unchecked(index) }
+    5: }
+    6: 
+    7: pub fn bounded_by_constant(data: &[u8]) -> Option<u8> {
+    8:     if data.len() >= 4 {
+    9:         Some(unsafe { *data.get_unchecked(3) })
+   10:     } else {
+   11:         None
+   12:     }
+   13: }
+   14: 
+   15: pub fn correctly_guarded(data: &[u8], index: usize) -> u8 {
+   16:     if index < data.len() {
+   17:         unsafe { *data.get_unchecked(index) }
+   18:     } else {
+   19:         0
+   20:     }
+   21: }
+
+第 4 行 — index 是常量 5，table 只有 3 个元素
+  可见变量 : ['index', 'table']
+  性质     : $index < len($table)
+  结论     : 确定违反
+  原始结论 : {"kind": "check", "result": false, "verdict": "F", "proved": false, "definite_violation": true, "unreachable": false, "reason": null, "paths": 1, "path_verdicts": [{"path_id": 0, "verdict": "F", "definite_violation": true}], "evidence": {"index": ["$index = [5, 5]"], "table": ["Length($table) = [3, 3]"]}}
+
+第 9 行 — 守卫 len >= 4 蕴含下标 3 在界内
+  可见变量 : ['data']
+  性质     : 3 < len($data)
+  结论     : 已证明
+  原始结论 : {"kind": "check", "result": true, "verdict": "T", "proved": true, "definite_violation": false, "unreachable": false, "reason": null, "paths": 1, "path_verdicts": [{"path_id": 0, "verdict": "T", "definite_violation": false}]}
+
+第 17 行 — 守卫与前置条件完全一致
+  可见变量 : ['data', 'index']
+  性质     : $index < len($data)
+  结论     : 已证明
+  原始结论 : {"kind": "check", "result": true, "verdict": "T", "proved": true, "definite_violation": false, "unreachable": false, "reason": null, "paths": 1, "path_verdicts": [{"path_id": 0, "verdict": "T", "definite_violation": false}]}
+
+============================================================================
+   行  性质                       实际         期望         结果
+============================================================================
+   4  $index < len($table)     确定违反       确定违反       ✓
+   9  3 < len($data)           已证明        已证明        ✓
+  17  $index < len($data)      已证明        已证明        ✓
+
+全部符合预期：MIRSA 在 macOS 上工作正常。

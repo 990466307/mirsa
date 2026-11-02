@@ -1,19 +1,32 @@
+# build output
 /target
-/.nested-git-backup/
-*.md
-!TEST_SUITE.md
-!docs/使用流程.md
-!tools/mcp/DSH接入.md
-!tools/mcp/README.md
-*.docx
-/.codegraph
-*.txt
-!tools/mcp/requirements.txt
-__pycache__/
-/mir_dump/
-/simple
+/third-party
+/mir_dump
 *.rmeta
 *.rlib
+
+# runtime / local state
+/.cache
+/last-run.json
+*.jsonl
+
+# backups and editor leftovers
+/backup
+/.nested-git-backup
+/.codegraph
 *.bak
 *.bak-*
 *.withcomments
+
+# python
+__pycache__/
+*.pyc
+
+# node / npm package artifacts
+node_modules/
+**/node_modules/
+/dsh-plugin/vendor/*.tar.gz
+/dsh-plugin/*.tgz
+
+# macOS
+.DS_Store

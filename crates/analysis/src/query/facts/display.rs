@@ -3,6 +3,18 @@ use std::fmt;
 
 impl fmt::Display for FactOutput {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.unreachable {
+            return writeln!(f, "不可达");
+        }
+        for path in &self.paths {
+            writeln!(f, "路径 {} (merged={}):", path.path_id, path.merged)?;
+            write!(f, "{path}")?;
+        }
+        Ok(())
+    }
+}
+impl fmt::Display for PathFacts {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "抽象信息：")?;
         for fact in &self.abstract_info {
             writeln!(f, "  {}: {:?}", fact.subject, fact.value)?;

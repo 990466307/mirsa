@@ -23,7 +23,29 @@ impl fmt::Display for Report {
         writeln!(f, "at '{}:", self.location)?;
         match &self.output {
             Output::Facts(facts) => write!(f, "{facts}"),
-            Output::Check(check) => write!(f, "{}", check.result),
+            Output::Check(check) => {
+                writeln!(
+                    f,
+                    "status={}, result={}, definite_violation={}, unreachable={}",
+                    check.status, check.result, check.definite_violation, check.unreachable
+                )?;
+                for path in &check.paths {
+                    writeln!(
+                        f,
+                        "path {} (merged={}, status={}):",
+                        path.path_id, path.merged, path.status
+                    )?;
+                    if let Some(expressions) = &path.evidence.expressions {
+                        writeln!(f, "evidence:\n{expressions}")?;
+                    } else {
+                        writeln!(f, "evidence: unavailable")?;
+                    }
+                    for note in &path.notes {
+                        writeln!(f, "note: {note}")?;
+                    }
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -93,6 +115,21 @@ impl<'a, 'tcx> AnalysisView<'a, 'tcx> {
         location: Location,
         bindings: &Bindings<'tcx>,
     ) -> Result<Proof, Vec<Diagnostic>> {
+        self.check_inner(expression, location, bindings)
+            .map_err(|errors| {
+                errors
+                    .into_iter()
+                    .map(|error| error.with_source(expression))
+                    .collect()
+            })
+    }
+
+    fn check_inner(
+        &self,
+        expression: &str,
+        location: Location,
+        bindings: &Bindings<'tcx>,
+    ) -> Result<Proof, Vec<Diagnostic>> {
         let syntax = parse_expression(expression)?;
         let binder = Binder {
             tcx: self.tcx,
@@ -105,22 +142,28 @@ impl<'a, 'tcx> AnalysisView<'a, 'tcx> {
         let prepared = self
             .prepare(&[location], &[&expr], false)
             .map_err(|error| {
-                vec![Diagnostic {
-                    span: syntax.span.clone(),
-                    message: format!("cannot query location: {error:?}"),
-                }]
+                vec![Diagnostic::new(
+                    syntax.span.clone(),
+                    format!("cannot query location: {error:?}"),
+                )]
             })?;
         let mut view = prepared
             .as_ref()
             .unwrap_or(self)
             .at(location)
             .map_err(|error| {
-                vec![Diagnostic {
-                    span: syntax.span,
-                    message: format!("cannot query location: {error:?}"),
-                }]
+                vec![Diagnostic::new(
+                    syntax.span.clone(),
+                    format!("cannot query location: {error:?}"),
+                )]
             })?;
-        Ok(view.prove(&Predicate::Value(expr)))
+        view.prove(&Predicate::Value(expr), bindings)
+            .map_err(|error| {
+                vec![Diagnostic::new(
+                    syntax.span,
+                    format!("cannot complete query: {error:?}"),
+                )]
+            })
     }
 
     pub fn query(
@@ -131,6 +174,19 @@ impl<'a, 'tcx> AnalysisView<'a, 'tcx> {
         self.execute(&parse(source)?, bindings)
     }
     pub fn execute(
+        &self,
+        document: &Document,
+        bindings: &Bindings<'tcx>,
+    ) -> Result<Report, Vec<Diagnostic>> {
+        self.execute_inner(document, bindings).map_err(|errors| {
+            errors
+                .into_iter()
+                .map(|error| error.with_source(document.source()))
+                .collect()
+        })
+    }
+
+    fn execute_inner(
         &self,
         document: &Document,
         bindings: &Bindings<'tcx>,
@@ -147,10 +203,13 @@ impl<'a, 'tcx> AnalysisView<'a, 'tcx> {
             .get(&statement.location)
             .copied()
             .ok_or_else(|| {
-                vec![Diagnostic {
-                    span: statement.span.clone(),
-                    message: format!("unknown location binding '{}", statement.location),
-                }]
+                vec![
+                    Diagnostic::new(
+                        statement.span.clone(),
+                        format!("unknown location binding '{}", statement.location),
+                    )
+                    .with_hint("确认位置名称与 Bindings::location 或源码中的 // mirsa: 标注一致。"),
+                ]
             })?;
         let expected = (statement.kind == RequestKind::Check)
             .then_some(value::ValueType::Rust(self.tcx.types.bool));
@@ -164,25 +223,31 @@ impl<'a, 'tcx> AnalysisView<'a, 'tcx> {
                 statement.kind == RequestKind::Facts,
             )
             .map_err(|error| {
-                vec![Diagnostic {
-                    span: statement.span.clone(),
-                    message: format!("cannot query location: {error:?}"),
-                }]
+                vec![Diagnostic::new(
+                    statement.span.clone(),
+                    format!("cannot query location: {error:?}"),
+                )]
             })?;
         let mut view = prepared
             .as_ref()
             .unwrap_or(self)
             .at(location)
             .map_err(|error| {
-                vec![Diagnostic {
-                    span: statement.span.clone(),
-                    message: format!("cannot query location: {error:?}"),
-                }]
+                vec![Diagnostic::new(
+                    statement.span.clone(),
+                    format!("cannot query location: {error:?}"),
+                )]
             })?;
         let output = match statement.kind {
             RequestKind::Check => {
                 let property = Predicate::Value(expression);
-                Output::Check(CheckReport::new(view.prove(&property)))
+                let proof = view.prove(&property, &scoped).map_err(|error| {
+                    vec![Diagnostic::new(
+                        statement.span.clone(),
+                        format!("cannot complete query: {error:?}"),
+                    )]
+                })?;
+                Output::Check(CheckReport::new(proof))
             }
             RequestKind::Facts => {
                 Output::Facts(view.facts(&expression, &statement.expression, &scoped)?)

@@ -1,16 +1,14 @@
 #![feature(rustc_private)]
 
-use mirsa::{Error, Mirsa, SourceBindings, query::Report};
+use mirsa::{Error, Mirsa};
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, io, path::PathBuf, process::ExitCode};
+use std::{io, path::PathBuf, process::ExitCode};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Request {
     #[serde(default)]
     file: Option<PathBuf>,
-    dsl: String,
-    bindings: BTreeMap<String, String>,
     #[serde(default)]
     rustc_args: Vec<String>,
     #[serde(default)]
@@ -20,8 +18,15 @@ struct Request {
 #[derive(Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 enum Response {
-    Ok { report: Report },
-    Error { kind: &'static str, message: String },
+    Ok {
+        reports: Vec<mirsa::AnnotationReport>,
+    },
+    Error {
+        kind: &'static str,
+        message: String,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        diagnostics: Vec<mirsa::query::Diagnostic>,
+    },
 }
 
 impl Response {
@@ -29,11 +34,15 @@ impl Response {
         Self::Error {
             kind,
             message: message.to_string(),
+            diagnostics: Vec::new(),
         }
     }
 }
 
 fn query(request: Request) -> Response {
+    if request.file.is_some() && request.source.is_some() {
+        return Response::error("input", "file 和 source 必须且只能提供一个");
+    }
     let file = match request.file.as_ref() {
         Some(path) => match path.canonicalize() {
             Ok(file) if file.is_file() => Some(file),
@@ -42,12 +51,6 @@ fn query(request: Request) -> Response {
         },
         None => None,
     };
-    let bindings = request
-        .bindings
-        .into_iter()
-        .fold(SourceBindings::new(), |bindings, (name, source)| {
-            bindings.variable(name, source)
-        });
     let mirsa = match request.source {
         Some(source) => Mirsa::from_source(source),
         None => match file {
@@ -60,26 +63,44 @@ fn query(request: Request) -> Response {
             }
         },
     };
-    match mirsa
-        .rustc_args(request.rustc_args)
-        .query(&request.dsl, &bindings)
-    {
-        Ok(report) => Response::Ok { report },
-        Err(error) => {
-            let kind = match &error {
-                Error::Compilation => "compilation",
-                Error::Binding(_) => "binding",
-                Error::Query(_) => "query",
-            };
-            Response::error(kind, error)
+    let mirsa = mirsa.rustc_args(request.rustc_args);
+    let result = mirsa
+        .analyze_annotations()
+        .map(|reports| Response::Ok { reports });
+    result.unwrap_or_else(|error| {
+        let kind = match &error {
+            Error::Compilation => "compilation",
+            Error::Binding(_) => "binding",
+            Error::Query(_) => "query",
+        };
+        let diagnostics = match &error {
+            Error::Query(errors) => errors.clone(),
+            _ => Vec::new(),
+        };
+        Response::Error {
+            kind,
+            message: error.to_string(),
+            diagnostics,
         }
-    }
+    })
 }
 
 fn main() -> ExitCode {
-    let response = match serde_json::from_reader(io::stdin().lock()) {
-        Ok(request) => query(request),
-        Err(error) => Response::error("input", error),
+    let args = std::env::args_os().skip(1).collect::<Vec<_>>();
+    let response = match args.as_slice() {
+        [] => match serde_json::from_reader(io::stdin().lock()) {
+            Ok(request) => query(request),
+            Err(error) => Response::error("input", error),
+        },
+        [file] => query(Request {
+            file: Some(file.into()),
+            rustc_args: vec![],
+            source: None,
+        }),
+        _ => Response::error(
+            "input",
+            "用法：mirsa-query <file.rs>；或不带参数从 stdin 读取 JSON",
+        ),
     };
     let success = matches!(&response, Response::Ok { .. });
     if let Err(error) = serde_json::to_writer(io::stdout().lock(), &response) {

@@ -333,28 +333,54 @@ pub(super) fn solve(problem: &Problem, timeout: Duration) -> SolveResult {
             UnknownReason::SolverUnknown
         })
     };
+    // Include the goal in a tautology so its declarations are present in the script.
+    solver.assert(&Bool::or(&ctx, &[&property, &property.not()]));
+    let assumptions_smtlib = solver.to_string();
+    let goal_smtlib = property.to_string();
+    let status = |s| match s {
+        SatResult::Sat => crate::Satisfiability::Sat,
+        SatResult::Unsat => crate::Satisfiability::Unsat,
+        SatResult::Unknown => crate::Satisfiability::Unknown,
+    };
     solver.push();
     solver.assert(&property.not());
     let negative = check();
     let candidate = match negative {
         SatResult::Unsat => None,
-        SatResult::Unknown => return unknown(),
+        SatResult::Unknown => {
+            let mut out = unknown();
+            out.evidence = Some(crate::SmtEvidence {
+                assumptions_smtlib,
+                goal_smtlib,
+                negative: status(negative),
+                positive: None,
+            });
+            return out;
+        }
         SatResult::Sat => solver.get_model().map(|model| model.to_string()),
     };
     solver.pop(1);
     solver.assert(&property);
-    match (negative, check()) {
+    let positive = check();
+    let mut out = match (negative, positive) {
         (SatResult::Unsat, SatResult::Sat) => SolveResult::known(Verdict::Proven),
         (SatResult::Sat, SatResult::Unsat) => SolveResult::known(Verdict::Refuted),
         (SatResult::Unsat, SatResult::Unsat) => SolveResult::known(Verdict::Unreachable),
         (negative, positive) => {
-            let mut out = if negative == SatResult::Sat && positive == SatResult::Sat {
+            let out = if negative == SatResult::Sat && positive == SatResult::Sat {
                 SolveResult::unknown(UnknownReason::InsufficientInformation)
             } else {
                 unknown()
             };
-            out.candidate = candidate;
             out
         }
-    }
+    };
+    out.candidate = candidate;
+    out.evidence = Some(crate::SmtEvidence {
+        assumptions_smtlib,
+        goal_smtlib,
+        negative: status(negative),
+        positive: Some(status(positive)),
+    });
+    out
 }

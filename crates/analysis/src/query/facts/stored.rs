@@ -20,7 +20,7 @@ pub(super) fn range(value: &Interval) -> FactValue {
     }
 }
 
-pub(super) fn export<'tcx>(
+pub(in crate::query) fn export<'tcx>(
     eval: &Eval<'_, 'tcx>,
     roots: &[AccessPath],
     names: &Exporter<'_, 'tcx>,

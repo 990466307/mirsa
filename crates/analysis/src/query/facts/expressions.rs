@@ -12,7 +12,7 @@ use rustc_middle::{
 };
 use std::collections::HashMap;
 
-pub(super) struct Exporter<'a, 'tcx> {
+pub(in crate::query) struct Exporter<'a, 'tcx> {
     pub tcx: TyCtxt<'tcx>,
     pub body: &'a Body<'tcx>,
     names: HashMap<AccessPath, String>,
@@ -184,10 +184,10 @@ impl<'a, 'tcx> Exporter<'a, 'tcx> {
         let recurse = |e| self.syntax(e, binding).map(Box::new);
         Ok(match &syntax.kind {
             K::Binding(name) => binding(name).ok_or_else(|| {
-                vec![Diagnostic {
-                    span: syntax.span.clone(),
-                    message: format!("missing symbolic binding ${name}"),
-                }]
+                vec![Diagnostic::new(
+                    syntax.span.clone(),
+                    format!("missing symbolic binding ${name}"),
+                )]
             })?,
             K::Number(n) => Expression::Literal { token: n.clone() },
             K::Bool(v) => Expression::Literal {
@@ -268,7 +268,7 @@ impl<'a, 'tcx> Exporter<'a, 'tcx> {
     }
 }
 
-pub(super) fn property(op: mirsa_dsl::Builtin) -> Option<Property> {
+pub(in crate::query) fn property(op: mirsa_dsl::Builtin) -> Option<Property> {
     use mirsa_dsl::Builtin as B;
     Some(match op {
         B::Math => Property::Math,

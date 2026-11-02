@@ -181,6 +181,7 @@ dependencies = [
  "mirsa-dsl",
  "mirsa-framework",
  "mirsa-relations",
+ "mirsa-solver",
  "serde",
  "serde_json",
 ]
@@ -199,7 +200,6 @@ dependencies = [
  "num-bigint",
  "num-traits",
  "serde",
- "serde_json",
 ]
 
 [[package]]

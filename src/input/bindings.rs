@@ -1,62 +1,23 @@
-use super::{
-    Error,
-    markers::{Markers, Point},
-};
+use super::{Error, location::Point};
 use crate::query::{Bindings, Document};
 use mirsa_dsl::{Expr, ExprKind};
-use rustc_middle::{
-    mir::{Body, Operand, VarDebugInfoContents},
-    ty::TyCtxt,
-};
-use std::collections::{BTreeSet, HashMap};
+use rustc_middle::mir::{Body, Operand, VarDebugInfoContents};
+use std::collections::BTreeSet;
 
-/// Aliases for source variables, resolved separately in each marked scope.
-#[derive(Clone, Debug, Default)]
-pub struct SourceBindings {
-    variables: Vec<(String, String)>,
-}
-
-impl SourceBindings {
-    pub fn new() -> Self {
-        Self::default()
+pub(super) fn resolve_at<'tcx>(
+    body: &Body<'tcx>,
+    document: &Document,
+    point: Point,
+) -> Result<Bindings<'tcx>, Error> {
+    let statement = document.statement();
+    let mut bindings = Bindings::new().location(&statement.location, point.location);
+    let mut names = BTreeSet::new();
+    referenced_names(&statement.expression, &mut names);
+    for name in names {
+        let value = visible_value(body, point, name)?;
+        bindings = bindings.value_at(name, value, &statement.location);
     }
-
-    /// Bind a DSL name to the visible source variable at each queried marker.
-    pub fn variable(mut self, name: impl Into<String>, source_name: impl Into<String>) -> Self {
-        self.variables.push((name.into(), source_name.into()));
-        self
-    }
-
-    pub(super) fn resolve<'tcx>(
-        &self,
-        tcx: TyCtxt<'tcx>,
-        body: &Body<'tcx>,
-        document: &Document,
-    ) -> Result<Bindings<'tcx>, Error> {
-        let mut aliases = HashMap::new();
-        for (name, source) in &self.variables {
-            if aliases.insert(name.as_str(), source.as_str()).is_some() {
-                return Err(Error::Binding(format!("重复的变量绑定 ${name}")));
-            }
-        }
-        let markers = Markers::new(tcx, body)?;
-        let mut bindings = Bindings::new();
-        let statement = document.statement();
-        let point = markers.resolve(&statement.location, body)?;
-        bindings = bindings.location(&statement.location, point.location);
-        let mut names = BTreeSet::new();
-        referenced_names(&statement.expression, &mut names);
-        for name in names {
-            let source_name = aliases.get(name).ok_or_else(|| {
-                Error::Binding(format!(
-                    "变量 ${name} 未绑定，请使用 variable(\"{name}\", \"源码变量名\")"
-                ))
-            })?;
-            let value = visible_value(body, point, source_name)?;
-            bindings = bindings.value_at(name, value, &statement.location);
-        }
-        Ok(bindings)
-    }
+    Ok(bindings)
 }
 
 fn visible_value<'tcx>(
@@ -88,7 +49,31 @@ fn visible_value<'tcx>(
         .collect();
     candidates.sort_by_key(|(depth, position, _)| (*depth, std::cmp::Reverse(*position)));
     let Some((depth, position, selected)) = candidates.first() else {
-        return Err(Error::Binding(format!("标注处找不到可见的变量 {name}")));
+        let visible = body
+            .var_debug_info
+            .iter()
+            .filter(|info| {
+                info.source_info.span.hi() <= point.position
+                    && !info.source_info.span.from_expansion()
+                    && info.composite.is_none()
+                    && scopes.contains(&info.source_info.scope)
+            })
+            .map(|info| info.name.to_string())
+            .collect::<BTreeSet<_>>();
+        let mut message = format!("标注处找不到可见的变量 {name}");
+        if !visible.is_empty() {
+            let names = visible
+                .iter()
+                .take(8)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("、");
+            message.push_str(&format!(
+                "；可见变量：{names}{}",
+                if visible.len() > 8 { "等" } else { "" }
+            ));
+        }
+        return Err(Error::Binding(message));
     };
     if candidates
         .iter()
