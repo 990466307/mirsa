@@ -1,6 +1,6 @@
 {
   "name": "dsh-mirsa",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "DSH plugin: run MIRSA on Rust source annotations and render verdicts with evidence",
   "type": "module",
   "license": "MIT",
